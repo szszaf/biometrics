@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FaceAuth</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="app-root">
+  <a class="skip-link" href="#main-panel">Przejdź do treści</a>
+
+  <aside class="sidebar" aria-label="Nawigacja główna">
+    <div class="sidebar-brand">
+      <span class="sidebar-logo" aria-hidden="true"></span>
+      <span class="sidebar-title">FaceAuth</span>
+    </div>
+    <p class="sidebar-caption">Użytkownik</p>
+    <nav class="nav-main">
+      <button type="button" class="nav-item active" data-target="view-auth">Autoryzacja</button>
+      <button type="button" class="nav-item" data-target="view-enroll">Rejestracja</button>
+    </nav>
+    <p class="sidebar-caption">Operator</p>
+    <nav class="nav-main" aria-label="Panel operatora">
+      <button type="button" class="nav-item" data-target="view-admin-dash">Przegląd</button>
+      <button type="button" class="nav-item" data-target="view-admin-users">Użytkownicy</button>
+      <button type="button" class="nav-item" data-target="view-admin-exp">Eksperymenty</button>
+      <button type="button" class="nav-item" data-target="view-admin-data">Zbiory danych</button>
+    </nav>
+    <p class="sidebar-meta" id="sidebarMeta"></p>
+  </aside>
+
+  <main id="main-panel" class="main-panel">
+    <!-- AUTH -->
+    <section id="view-auth" class="view view-active">
+      <header class="view-header">
+        <h1>Autoryzacja twarzą</h1>
+        <p class="view-sub">Skan z kamery: rozpoznanie w całej bazie albo porównanie z wybraną osobą.</p>
+      </header>
+
+      <div class="auth-controls">
+        <div class="auth-toolbar">
+          <div class="segmented" role="tablist" aria-label="Tryb autoryzacji">
+            <button type="button" class="seg-btn active" role="tab" id="tab-identify" aria-selected="true" aria-controls="auth-panel" data-auth-tab="identify" title="Kto to? — szukanie wśród wszystkich zapisanych">Rozpoznanie w bazie</button>
+            <button type="button" class="seg-btn" role="tab" id="tab-verify" aria-selected="false" aria-controls="auth-panel" data-auth-tab="verify" title="Czy to ta osoba? — porównanie z wybranym identyfikatorem">Weryfikacja osoby</button>
+          </div>
+          <label class="threshold-inline" for="globalThreshold">
+            <span class="threshold-label-text">Próg podobieństwa</span>
+            <input type="number" id="globalThreshold" value="0.45" min="-1" max="1" step="0.01" inputmode="decimal" aria-describedby="thresholdHint" />
+            <span id="thresholdHint" class="threshold-hint">−1…1, cosine</span>
+          </label>
+        </div>
+        <div id="verifyUserRow" class="verify-user-row hidden">
+          <label class="field-label" for="verifyUserSelect">Osoba do sprawdzenia</label>
+          <select id="verifyUserSelect"></select>
+        </div>
+      </div>
+
+      <div class="auth-layout" id="auth-panel" role="tabpanel" aria-labelledby="tab-identify">
+        <div class="camera-column">
+          <div class="camera-shell">
+            <video id="camVideo" playsinline muted autoplay aria-label="Podgląd kamery — autoryzacja"></video>
+            <div class="face-guide" aria-hidden="true"></div>
+            <div class="cam-off" id="camPlaceholder">Kamera wyłączona</div>
+          </div>
+          <div class="camera-actions">
+            <button type="button" class="btn secondary" id="btnCamToggle">Włącz kamerę</button>
+            <button type="button" class="btn primary" id="btnScan" disabled aria-busy="false">Wykonaj skan</button>
+          </div>
+          <p class="msg cam-inline-msg" id="camInlineMsg" role="status" aria-live="polite"></p>
+        </div>
+        <div class="auth-status-column">
+          <div class="status-card">
+            <h2 class="status-title">Status</h2>
+            <ul class="step-list" id="authSteps">
+              <li data-step="idle">Gotowe do skanu</li>
+            </ul>
+          </div>
+          <div class="result-card-auth" id="authResult" hidden role="region" aria-live="polite" aria-label="Wynik autoryzacji"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ENROLL -->
+    <section id="view-enroll" class="view">
+      <header class="view-header">
+        <h1>Rejestracja użytkownika</h1>
+        <p class="view-sub">Kilka zdjęć z kamery; w bazie zapisuje się wektor twarzy (uśredniony) — bez surowych obrazów.</p>
+      </header>
+
+      <div class="enroll-stack">
+        <div class="enroll-form-block">
+          <label class="field-label" for="enrollUserId">Identyfikator użytkownika</label>
+          <input type="text" id="enrollUserId" autocomplete="username" placeholder="np. jan_kowalski" />
+          <p class="hint-inline">Co najmniej <strong>3</strong> klatki; wygodnie <strong>5–10</strong>. Litery, cyfry i podkreślenia.</p>
+          <div class="camera-shell enroll-cam">
+            <video id="enrollVideo" playsinline muted autoplay aria-label="Podgląd kamery — rejestracja"></video>
+            <div class="face-guide" aria-hidden="true"></div>
+            <div class="cam-off" id="enrollCamPlaceholder">Kamera wyłączona</div>
+          </div>
+          <div class="camera-actions">
+            <button type="button" class="btn secondary" id="btnEnrollCamToggle">Włącz kamerę</button>
+            <button type="button" class="btn secondary" id="btnCaptureShot" disabled>Dodaj klatkę</button>
+            <button type="button" class="btn ghost" id="btnClearShots">Wyczyść ujęcia</button>
+          </div>
+          <div class="enroll-preview-integrated">
+            <h2 class="preview-heading">Zebrane ujęcia: <span id="shotCount">0</span></h2>
+            <p class="hint-inline preview-hint">Miniatury pojawią się poniżej. Przycisk × usuwa pojedyncze ujęcie.</p>
+            <div class="shot-strip" id="shotStrip" role="list" aria-label="Lista zapisanych klatek"></div>
+            <button type="button" class="btn primary btn-block" id="btnSubmitEnroll" disabled>Zapisz w bazie</button>
+          </div>
+          <p class="msg" id="enrollMsg" role="status"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ADMIN DASH -->
+    <section id="view-admin-dash" class="view">
+      <header class="view-header">
+        <h1>Przegląd</h1>
+        <p class="view-sub">Stan usługi — metryki FAR/FRR/ROC uzupełnij raportem z eksperymentów</p>
+      </header>
+      <div class="dash-grid" id="dashCards"></div>
+      <p class="dash-note" id="dashNote"></p>
+    </section>
+
+    <!-- ADMIN USERS -->
+    <section id="view-admin-users" class="view">
+      <header class="view-header view-header-row">
+        <h1>Użytkownicy</h1>
+        <button type="button" class="btn ghost" id="btnAdminRefreshUsers">Odśwież listę</button>
+      </header>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Identyfikator</th>
+              <th scope="col">Liczba klatek</th>
+              <th scope="col">Zapisano</th>
+              <th scope="col"><span class="sr-only">Akcje</span></th>
+            </tr>
+          </thead>
+          <tbody id="adminUsersBody"></tbody>
+        </table>
+      </div>
+      <p class="msg" id="adminUsersMsg"></p>
+    </section>
+
+    <!-- ADMIN EXPERIMENTS -->
+    <section id="view-admin-exp" class="view">
+      <header class="view-header">
+        <h1>Eksperymenty</h1>
+        <p class="view-sub">Próg decyzyjny jest współdzielony z widokiem „Autoryzacja”</p>
+      </header>
+      <div class="panel-inner">
+        <label class="slider-label" for="expThresholdSlider">
+          Próg decyzyjny (podgląd)
+          <input type="range" id="expThresholdSlider" min="0" max="100" value="45" />
+          <output id="expThresholdOut" for="expThresholdSlider">0.45</output>
+        </label>
+        <p class="hint-inline">Krzywe ROC oraz FAR/FRR względem progu — w notebooku lub skrypcie; tutaj ustawiasz próg używany przy skanie.</p>
+        <div class="chart-placeholder" id="rocPlaceholder">
+          <span>Miejsce na wykres ROC (wyniki eksperymentów)</span>
+        </div>
+        <h2 class="section-mini">Porównanie 1:1 (dwa obrazy)</h2>
+        <form id="formCompare" class="form-stack compact">
+          <label class="field-label" for="compareThreshold">Próg podobieństwa</label>
+          <input type="number" id="compareThreshold" name="threshold" value="0.45" min="-1" max="1" step="0.01" />
+          <label class="field-label" for="compareImageA">Pierwszy obraz</label>
+          <input type="file" id="compareImageA" name="image_a" accept="image/*" required />
+          <label class="field-label" for="compareImageB">Drugi obraz</label>
+          <input type="file" id="compareImageB" name="image_b" accept="image/*" required />
+          <button type="submit" class="btn secondary">Porównaj obrazy</button>
+        </form>
+        <p class="msg" id="compareMsg"></p>
+      </div>
+    </section>
+
+    <!-- ADMIN DATASETS -->
+    <section id="view-admin-data" class="view">
+      <header class="view-header">
+        <h1>Zbiory danych</h1>
+        <p class="view-sub">Podział train / dev / test w repozytorium</p>
+      </header>
+      <div class="panel-inner">
+        <ul class="dataset-list">
+          <li><code>face_authorization/data/split/train_split.txt</code> — ID tożsamości treningowych</li>
+          <li><code>face_authorization/data/split/valid_split.txt</code> — walidacja</li>
+          <li><code>face_authorization/data/split/test_split.txt</code> — test</li>
+          <li><code>face_authorization/data/img_align_celeba_cropped/</code> — obrazy 112×112 pod ArcFace</li>
+        </ul>
+        <p class="hint-inline">Użytkownicy zapisani w aplikacji to osobna baza (embeddingi) — nie mylić z podziałem CelebA.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
