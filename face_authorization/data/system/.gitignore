@@ -1,0 +1,3 @@
+# Runtime SQLite and other local files — not in git.
+*
+!.gitignore
