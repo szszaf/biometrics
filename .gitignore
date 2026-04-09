@@ -1,0 +1,26 @@
+.venv/
+.cursor/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- Large / local-only files (folder layout kept via .gitkeep) ---
+
+# ArcFace weights (copy locally; see README)
+face_authorization/results/*.pth
+face_authorization/results/*.pt
+
+# MediaPipe bundle (Dockerfile download or manual)
+face_authorization/models/*.task
+
+# SQLite: tracked `data/system/.gitignore` ignores `*` there; root fallback until that file
+# exists on disk (e.g. Docker-owned `data/system/` → chown, then `git checkout -- data/system/.gitignore`).
+face_authorization/data/system/*.db
+face_authorization/data/system/*.db-shm
+face_authorization/data/system/*.db-wal
+
+# CelebA cropped faces (huge tree; only path placeholder in git)
+face_authorization/data/img_align_celeba_cropped/cropped/*
+!face_authorization/data/img_align_celeba_cropped/cropped/.gitkeep
