@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.py[cod]
+.git
+*.ipynb
+.pytest_cache
+.mypy_cache
+data/img_align_celeba_cropped
+data/system

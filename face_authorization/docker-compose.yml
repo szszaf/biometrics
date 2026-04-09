@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/system:/app/data/system
+      # Metadane + zdjęcia CelebA (seed 80 profili z splitu test przy starcie)
+      - ./data/celeba_metadata:/app/data/celeba_metadata:ro
+      - ./data/split:/app/data/split:ro
+      - ./data/img_align_celeba_cropped:/app/data/img_align_celeba_cropped:ro
+      # Kod z hosta — edycje od razu widoczne (HTML/JS/CSS po odświeżeniu; Python przez --reload)
+      - ./face_auth:/app/face_auth
+      - ./app:/app/app
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+    environment:
+      ARCFACE_WEIGHTS: /app/results/arcface_celeba_best.pth
+      # SEED_AUTO=0 — wyłącza automatyczne wgrywanie profili
+      # SEED_ENROLLED_COUNT=80 — docelowa liczba użytkowników w bazie
+      # SEED_SPLIT=test — plik data/split/{split}_split.txt
