@@ -90,9 +90,11 @@
     const sl = $("#expThresholdSlider");
     const out = $("#expThresholdOut");
     if (!inp || !sl || !out) return;
-    const x = Math.round(parseFloat(inp.value) * 100);
-    sl.value = String(Number.isFinite(x) ? Math.min(100, Math.max(0, x)) : 45);
-    out.textContent = parseFloat(inp.value).toFixed(2);
+    const raw = parseFloat(inp.value);
+    const x = Math.round(raw * 100);
+    const clamped = Number.isFinite(x) ? Math.min(100, Math.max(-100, x)) : 45;
+    sl.value = String(clamped);
+    out.textContent = Number.isFinite(raw) ? raw.toFixed(2) : "0.45";
   }
 
   function syncInputFromSlider() {
