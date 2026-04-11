@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const THRESHOLD_KEY = "faceauth_threshold_v1";
+  const THRESHOLD_KEY = "faceauth_threshold_v2";
   const $ = (sel, r = document) => r.querySelector(sel);
 
   const camVideo = $("#camVideo");
@@ -65,8 +65,8 @@
   }
 
   function getThreshold() {
-    const v = parseFloat($("#globalThreshold")?.value || "0.45");
-    return Number.isFinite(v) ? v : 0.45;
+    const v = parseFloat($("#globalThreshold")?.value || "0.16");
+    return Number.isFinite(v) ? v : 0.16;
   }
 
   function saveThreshold() {
@@ -92,9 +92,9 @@
     if (!inp || !sl || !out) return;
     const raw = parseFloat(inp.value);
     const x = Math.round(raw * 100);
-    const clamped = Number.isFinite(x) ? Math.min(100, Math.max(-100, x)) : 45;
+    const clamped = Number.isFinite(x) ? Math.min(100, Math.max(-100, x)) : 16;
     sl.value = String(clamped);
-    out.textContent = Number.isFinite(raw) ? raw.toFixed(2) : "0.45";
+    out.textContent = Number.isFinite(raw) ? raw.toFixed(2) : "0.16";
   }
 
   function syncInputFromSlider() {

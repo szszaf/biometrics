@@ -230,7 +230,7 @@ def remove_user(user_id: str):
 @app.post("/verify", response_model=VerifyResponse, tags=["authentication"])
 async def verify(
     user_id: str = Form(...),
-    threshold: float = Query(0.45, ge=-1.0, le=1.0),
+    threshold: float = Query(0.16, ge=-1.0, le=1.0),
     image: UploadFile = File(...),
 ):
     stored = app.state.store.get(user_id)
@@ -280,7 +280,7 @@ async def identify(
 
 @app.post("/compare", response_model=dict, tags=["authentication"])
 async def compare(
-    threshold: float = Query(0.45, ge=-1.0, le=1.0),
+    threshold: float = Query(0.16, ge=-1.0, le=1.0),
     image_a: UploadFile = File(...),
     image_b: UploadFile = File(...),
 ):

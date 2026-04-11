@@ -7,9 +7,19 @@ import os
 from pathlib import Path
 
 from face_auth.config import BASE_DIR
-from face_auth.inference import embedding_from_path, embedding_to_numpy
+from face_auth.inference import (
+    celeba_cropped_notebook_preprocess,
+    embedding_from_path,
+    embedding_to_numpy,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _seed_notebook_pipeline_enabled() -> bool:
+    """Domyślnie tak — zgodność z ``experiments_part_2`` / cropy z ``image_crop.ipynb``."""
+    v = os.environ.get("SEED_NOTEBOOK_PIPELINE", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
 
 
 def _load_identity_to_cropped_files(
@@ -63,16 +73,24 @@ def run_auto_seed(
     *,
     target_count: int | None = None,
     split_name: str | None = None,
+    use_notebook_pipeline: bool | None = None,
 ) -> int:
     """
     Uzupełnia bazę do ``target_count`` użytkowników z tożsamości ze wskazanego splitu.
     Używa jednego zdjęcia na tożsamość (pierwsze dostępne po sortowaniu).
     Zwraca liczbę nowo zapisanych rekordów w tej sesji.
+
+    Gdy ``use_notebook_pipeline`` jest True (domyślnie wg ``SEED_NOTEBOOK_PIPELINE``):
+    brak MediaPipe, preprocess jak w notebookach na cropach 112×112.
+    Gdy False: ten sam tor co API (``face_aligner`` + ``default_preprocess``).
     """
     if target_count is None:
         target_count = int(os.environ.get("SEED_ENROLLED_COUNT", "80"))
     if target_count <= 0:
         return 0
+
+    if use_notebook_pipeline is None:
+        use_notebook_pipeline = _seed_notebook_pipeline_enabled()
 
     split_name = split_name or os.environ.get("SEED_SPLIT", "test").strip().lower()
     split_file = BASE_DIR / "data" / "split" / f"{split_name}_split.txt"
@@ -86,8 +104,9 @@ def run_auto_seed(
         logger.info(msg)
         return 0
 
+    mode = "notebook (bez MediaPipe, preprocess jak experiments_part_2)" if use_notebook_pipeline else "API (MediaPipe + Resize 112)"
     print(
-        f"[seed] Start: cel {target_count} profili, split={split_name}, "
+        f"[seed] Start: cel {target_count} profili, split={split_name}, tryb={mode}, "
         f"dane pod {BASE_DIR / 'data'}",
         flush=True,
     )
@@ -110,6 +129,10 @@ def run_auto_seed(
         logger.warning(msg)
         return 0
 
+    notebook_transform = (
+        celeba_cropped_notebook_preprocess() if use_notebook_pipeline else None
+    )
+
     added = 0
     for celeb_id in order:
         if len(existing) >= target_count:
@@ -122,9 +145,18 @@ def run_auto_seed(
             continue
         img_path = paths[0]
         try:
-            emb = embedding_from_path(
-                model, device, img_path, face_aligner=face_aligner
-            )
+            if use_notebook_pipeline:
+                emb = embedding_from_path(
+                    model,
+                    device,
+                    img_path,
+                    transform=notebook_transform,
+                    face_aligner=None,
+                )
+            else:
+                emb = embedding_from_path(
+                    model, device, img_path, face_aligner=face_aligner
+                )
             vec = embedding_to_numpy(emb)
             store.upsert(uid, vec, sample_count=1)
             existing.add(uid)

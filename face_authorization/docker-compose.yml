@@ -25,3 +25,5 @@ services:
       # SEED_AUTO=0 — wyłącza automatyczne wgrywanie profili
       # SEED_ENROLLED_COUNT=80 — docelowa liczba użytkowników w bazie
       # SEED_SPLIT=test — plik data/split/{split}_split.txt
+      # SEED_NOTEBOOK_PIPELINE=1 (domyślnie) — seed jak experiments_part_2 (bez MediaPipe); 0 = jak API
+      SEED_NOTEBOOK_PIPELINE: "1"

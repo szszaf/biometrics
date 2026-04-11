@@ -9,6 +9,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from PIL import Image
+from skimage.transform import SimilarityTransform
 
 # Szablon 5 punktów w przestrzeni docelowej 112×112 (jak w InsightFace / typowy pipeline ArcFace)
 _ARCFACE_DST = np.array(
@@ -68,22 +69,17 @@ def landmarks_to_arcface_src(
 
 
 def warp_similarity_to_arcface(rgb: np.ndarray, src_five: np.ndarray) -> np.ndarray | None:
-    """RGB uint8 (H,W,3) -> wycinek 112×112 RGB lub None przy błędzie estymacji."""
-    m_est, _ = cv2.estimateAffinePartial2D(
-        src_five,
-        _ARCFACE_DST,
-        method=cv2.LMEDS,
-    )
-    if m_est is None:
+    """RGB uint8 (H,W,3) -> wycinek 112×112 RGB — ta sama logika co ``align_face`` w ``image_crop.ipynb``.
+
+    ``SimilarityTransform().estimate`` + ``cv2.warpAffine(..., borderValue=0.0)``.
+    Przy ``estimate`` zwracającym ``False`` (skimage) zwracamy ``None``.
+    """
+    tform = SimilarityTransform()
+    ok = tform.estimate(src_five, _ARCFACE_DST)
+    if ok is False:
         return None
-    return cv2.warpAffine(
-        rgb,
-        m_est,
-        (112, 112),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(127, 127, 127),
-    )
+    m = tform.params[0:2, :]
+    return cv2.warpAffine(rgb, m, (112, 112), borderValue=0.0)
 
 
 class FaceLandmarkerAligner:

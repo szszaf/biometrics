@@ -24,6 +24,16 @@ def default_preprocess():
     )
 
 
+def celeba_cropped_notebook_preprocess():
+    """Jak ``image_crop`` / notebook: ``ToTensor`` + ``Normalize`` — bez ``Resize`` (wejście 112×112)."""
+    return transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ]
+    )
+
+
 @torch.no_grad()
 def embedding_from_pil(
     model,
@@ -38,7 +48,10 @@ def embedding_from_pil(
         if aligned is None:
             raise ValueError("Nie wykryto twarzy lub nie udało się wyrównać obrazu (MediaPipe)")
         pil_image = aligned
-    transform = transform or default_preprocess()
+        if transform is None:
+            transform = celeba_cropped_notebook_preprocess()
+    elif transform is None:
+        transform = default_preprocess()
     tensor = transform(pil_image.convert("RGB")).unsqueeze(0).to(device)
     emb = model(tensor)
     emb = F.normalize(emb, p=2, dim=1)
