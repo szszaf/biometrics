@@ -153,11 +153,13 @@
       </header>
       <div class="panel-inner">
         <label class="slider-label" for="expThresholdSlider">
-          Próg decyzyjny (podgląd)
-          <input type="range" id="expThresholdSlider" min="0" max="100" value="45" />
+          Próg decyzyjny (jak w Autoryzacji, cosine −1…1)
+          <input type="range" id="expThresholdSlider" min="-100" max="100" value="45" step="1" />
           <output id="expThresholdOut" for="expThresholdSlider">0.45</output>
         </label>
-        <p class="hint-inline">Krzywe ROC oraz FAR/FRR względem progu — w notebooku lub skrypcie; tutaj ustawiasz próg używany przy skanie.</p>
+        <p class="hint-inline">
+          Suwak: −100…+100 odpowiada progowi −1…+1 (ta sama skala co pole „Próg podobieństwa”). Krzywe ROC / FAR / FRR — w notebooku lub skrypcie.
+        </p>
         <div class="chart-placeholder" id="rocPlaceholder">
           <span>Miejsce na wykres ROC (wyniki eksperymentów)</span>
         </div>
