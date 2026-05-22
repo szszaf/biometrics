@@ -1,0 +1,13 @@
+numpy
+opencv-python
+scikit-image
+tqdm
+matplotlib
+scikit-learn
+Pillow
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+mediapipe>=0.10.14
+speechbrain>=1.0.0
+hyperpyyaml

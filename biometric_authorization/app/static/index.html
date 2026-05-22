@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BioDesk — biometria</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="app-root">
+  <a class="skip-link" href="#main-panel">Przejdź do treści</a>
+
+  <aside class="sidebar" aria-label="Nawigacja główna">
+    <div class="sidebar-brand">
+      <span class="sidebar-logo" aria-hidden="true"></span>
+      <span class="sidebar-title">BioDesk</span>
+    </div>
+    <p class="sidebar-caption">Serwis</p>
+    <nav class="nav-main">
+      <button type="button" class="nav-item active" data-target="view-auth">Autoryzacja</button>
+      <button type="button" class="nav-item" data-target="view-enroll">Rejestracja</button>
+    </nav>
+    <p class="sidebar-caption">Operator</p>
+    <nav class="nav-main" aria-label="Panel operatora">
+      <button type="button" class="nav-item" data-target="view-admin-dash">Przegląd</button>
+      <button type="button" class="nav-item" data-target="view-admin-users">Użytkownicy</button>
+      <button type="button" class="nav-item" data-target="view-admin-exp">Eksperymenty</button>
+      <button type="button" class="nav-item" data-target="view-admin-data">Zbiory danych</button>
+    </nav>
+    <p class="sidebar-meta" id="sidebarMeta"></p>
+  </aside>
+
+  <main id="main-panel" class="main-panel">
+    <!-- AUTH -->
+    <section id="view-auth" class="view view-active">
+      <header class="view-header">
+        <h1>Autoryzacja biometryczna</h1>
+        <p class="view-sub">Weryfikacja (znany identyfikator) lub identyfikacja (cała baza) — twarz albo głos, zależnie od dostępnych modeli.</p>
+      </header>
+
+      <div class="modality-bar hidden" id="modalityBarAuth" role="group" aria-label="Metoda biometryczna">
+        <span class="field-label">Metoda</span>
+        <div class="segmented" id="modalitySegAuth">
+          <button type="button" class="seg-btn" data-modality-pick="face" id="modPickFaceAuth">Twarz</button>
+          <button type="button" class="seg-btn" data-modality-pick="voice" id="modPickVoiceAuth">Głos</button>
+        </div>
+      </div>
+
+      <div class="auth-controls">
+        <div class="auth-toolbar">
+          <div class="segmented" role="tablist" aria-label="Tryb autoryzacji">
+            <button type="button" class="seg-btn active" role="tab" id="tab-identify" aria-selected="true" aria-controls="auth-panel" data-auth-tab="identify" title="Kto to? — szukanie wśród wszystkich zapisanych">Rozpoznanie w bazie</button>
+            <button type="button" class="seg-btn" role="tab" id="tab-verify" aria-selected="false" aria-controls="auth-panel" data-auth-tab="verify" title="Czy to ta osoba? — porównanie z wybranym identyfikatorem">Weryfikacja osoby</button>
+          </div>
+          <label class="threshold-inline" for="globalThreshold">
+            <span class="threshold-label-text" id="thresholdLabelText">Próg podobieństwa (twarz)</span>
+            <input type="number" id="globalThreshold" value="0.16" min="-1" max="1" step="0.01" inputmode="decimal" aria-describedby="thresholdHint" />
+            <span id="thresholdHint" class="threshold-hint">cosine −1…1</span>
+          </label>
+        </div>
+        <div id="verifyUserRow" class="verify-user-row hidden">
+          <label class="field-label" for="verifyUserSelect">Osoba do sprawdzenia</label>
+          <select id="verifyUserSelect"></select>
+        </div>
+      </div>
+
+      <div class="auth-layout" id="auth-panel" role="tabpanel" aria-labelledby="tab-identify">
+        <div class="camera-column" id="authFaceColumn">
+          <div class="camera-shell">
+            <video id="camVideo" playsinline muted autoplay aria-label="Podgląd kamery — autoryzacja"></video>
+            <div class="face-guide" aria-hidden="true"></div>
+            <div class="cam-off" id="camPlaceholder">Kamera wyłączona</div>
+          </div>
+          <div class="camera-actions">
+            <button type="button" class="btn secondary" id="btnCamToggle">Włącz kamerę</button>
+            <button type="button" class="btn primary" id="btnScan" disabled aria-busy="false">Wykonaj skan</button>
+          </div>
+          <p class="msg cam-inline-msg" id="camInlineMsg" role="status" aria-live="polite"></p>
+        </div>
+        <div class="camera-column hidden" id="authVoiceColumn">
+          <p class="hint-inline" id="voiceAuthHint">
+            Ta próba trwa dokładnie <strong id="voiceAuthDurationLabel">9</strong> s (nagrywanie kończy się automatycznie).
+            Serwer przyjmuje do ok. <strong>60 s</strong> audio — dłuższe pliki są przycinane przy obliczaniu embeddingu.
+          </p>
+          <ol class="voice-steps" aria-label="Kroki">
+            <li>Włącz mikrofon i zezwól w przeglądarce.</li>
+            <li>Naciśnij „Nagraj i wyślij” — przez wskazany czas mów normalnym tonem.</li>
+            <li>Poczekaj na wynik w sekcji obok (identyfikacja lub weryfikacja).</li>
+          </ol>
+          <div class="voice-rec-panel hidden" id="voiceAuthRecPanel" aria-live="polite" aria-atomic="true">
+            <div class="voice-rec-phase" id="voiceAuthRecPhase"></div>
+            <div class="voice-rec-countdown" id="voiceAuthRecCountdown" aria-label="Postęp nagrywania"></div>
+            <div class="voice-vis-wrap">
+              <canvas
+                id="voiceAuthVisCanvas"
+                class="voice-vis-canvas"
+                width="400"
+                height="48"
+                aria-hidden="true"
+              ></canvas>
+            </div>
+            <div
+              class="voice-rec-bar"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              id="voiceAuthRecBar"
+            >
+              <div class="voice-rec-bar-fill" id="voiceAuthRecBarFill"></div>
+            </div>
+            <p class="voice-rec-meta hint-inline" id="voiceAuthRecMeta"></p>
+          </div>
+          <div class="voice-actions">
+            <button type="button" class="btn secondary" id="btnVoiceMicAuth">Włącz mikrofon</button>
+            <button type="button" class="btn primary" id="btnVoiceRecordAuth" disabled>Nagraj i wyślij</button>
+          </div>
+          <p class="msg" id="voiceAuthMsg" role="status" aria-live="polite"></p>
+        </div>
+        <div class="auth-status-column">
+          <div class="status-card">
+            <h2 class="status-title">Status</h2>
+            <ul class="step-list" id="authSteps">
+              <li data-step="idle">Gotowe do skanu</li>
+            </ul>
+          </div>
+          <div class="result-card-auth" id="authResult" hidden role="region" aria-live="polite" aria-label="Wynik autoryzacji"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ENROLL -->
+    <section id="view-enroll" class="view">
+      <header class="view-header">
+        <h1>Rejestracja użytkownika</h1>
+        <p class="view-sub">Profil z kilku zdjęć twarzy albo kilku nagrań głosu — w bazie tylko embedding (wektor), bez surowych mediów.</p>
+      </header>
+
+      <div class="modality-bar hidden" id="modalityBarEnroll" role="group" aria-label="Metoda rejestracji">
+        <span class="field-label">Metoda</span>
+        <div class="segmented" id="modalitySegEnroll">
+          <button type="button" class="seg-btn" data-modality-pick="face" id="modPickFaceEnroll">Twarz</button>
+          <button type="button" class="seg-btn" data-modality-pick="voice" id="modPickVoiceEnroll">Głos</button>
+        </div>
+      </div>
+
+      <div class="enroll-stack">
+        <div class="enroll-form-block" id="enrollFaceBlock">
+          <label class="field-label" for="enrollUserId">Identyfikator użytkownika</label>
+          <input type="text" id="enrollUserId" autocomplete="username" placeholder="np. jan_kowalski" />
+          <p class="hint-inline">Co najmniej <strong>3</strong> klatki; wygodnie <strong>5–10</strong>. Litery, cyfry i podkreślenia.</p>
+          <div class="camera-shell enroll-cam">
+            <video id="enrollVideo" playsinline muted autoplay aria-label="Podgląd kamery — rejestracja"></video>
+            <div class="face-guide" aria-hidden="true"></div>
+            <div class="cam-off" id="enrollCamPlaceholder">Kamera wyłączona</div>
+          </div>
+          <div class="camera-actions">
+            <button type="button" class="btn secondary" id="btnEnrollCamToggle">Włącz kamerę</button>
+            <button type="button" class="btn secondary" id="btnCaptureShot" disabled>Dodaj klatkę</button>
+            <button type="button" class="btn ghost" id="btnClearShots">Wyczyść ujęcia</button>
+          </div>
+          <div class="enroll-preview-integrated">
+            <h2 class="preview-heading">Zebrane ujęcia: <span id="shotCount">0</span></h2>
+            <p class="hint-inline preview-hint">Miniatury pojawią się poniżej. Przycisk × usuwa pojedyncze ujęcie.</p>
+            <div class="shot-strip" id="shotStrip" role="list" aria-label="Lista zapisanych klatek"></div>
+            <button type="button" class="btn primary btn-block" id="btnSubmitEnroll" disabled>Zapisz w bazie</button>
+          </div>
+          <p class="msg" id="enrollMsg" role="status"></p>
+        </div>
+        <div class="enroll-form-block hidden" id="enrollVoiceBlock">
+          <label class="field-label" for="enrollUserIdVoice">Identyfikator użytkownika</label>
+          <input type="text" id="enrollUserIdVoice" autocomplete="username" placeholder="np. jan_kowalski" />
+          <p class="hint-inline">
+            Wymagane: co najmniej <strong>3</strong> oddzielne nagrania; zalecane <strong>5–8</strong>. Maksimum <strong>12</strong>.
+            Jedno nagranie trwa <strong id="voiceEnrollDurationLabel">6,5</strong> s (auto-stop).
+          </p>
+          <p class="voice-quota" id="voiceEnrollQuota" role="status" aria-live="polite">Nagrano 0 z 3 wymaganych próbek.</p>
+          <div class="voice-rec-panel hidden" id="voiceEnrollRecPanel" aria-live="polite" aria-atomic="true">
+            <div class="voice-rec-phase" id="voiceEnrollRecPhase"></div>
+            <div class="voice-rec-countdown" id="voiceEnrollRecCountdown" aria-label="Postęp nagrywania"></div>
+            <div class="voice-vis-wrap">
+              <canvas
+                id="voiceEnrollVisCanvas"
+                class="voice-vis-canvas"
+                width="400"
+                height="48"
+                aria-hidden="true"
+              ></canvas>
+            </div>
+            <div
+              class="voice-rec-bar"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              id="voiceEnrollRecBar"
+            >
+              <div class="voice-rec-bar-fill" id="voiceEnrollRecBarFill"></div>
+            </div>
+            <p class="voice-rec-meta hint-inline" id="voiceEnrollRecMeta"></p>
+          </div>
+          <div class="voice-actions">
+            <button type="button" class="btn secondary" id="btnVoiceMicEnroll">Włącz mikrofon</button>
+            <button type="button" class="btn secondary" id="btnVoiceAddClip" disabled>Dodaj nagranie</button>
+            <button type="button" class="btn ghost" id="btnVoiceClearClips">Wyczyść nagrania</button>
+          </div>
+          <div class="enroll-preview-integrated">
+            <h2 class="preview-heading">Zebrane nagrania: <span id="voiceClipCount">0</span></h2>
+            <div class="shot-strip" id="voiceClipStrip" role="list" aria-label="Lista nagrań"></div>
+            <button type="button" class="btn primary btn-block" id="btnSubmitVoiceEnroll" disabled>Zapisz profil głosu</button>
+          </div>
+          <p class="msg" id="enrollVoiceMsg" role="status"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ADMIN DASH -->
+    <section id="view-admin-dash" class="view">
+      <header class="view-header">
+        <h1>Przegląd</h1>
+        <p class="view-sub">Stan usługi — metryki FAR/FRR/ROC uzupełnij raportem z eksperymentów</p>
+      </header>
+      <div class="dash-grid" id="dashCards"></div>
+      <p class="dash-note" id="dashNote"></p>
+    </section>
+
+    <!-- ADMIN USERS -->
+    <section id="view-admin-users" class="view">
+      <header class="view-header view-header-row">
+        <h1>Użytkownicy</h1>
+        <div class="admin-toolbar">
+          <label class="field-label inline" for="adminModalitySelect">Metoda</label>
+          <select id="adminModalitySelect" aria-label="Metoda listy użytkowników"></select>
+          <button type="button" class="btn ghost" id="btnAdminRefreshUsers">Odśwież listę</button>
+        </div>
+      </header>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Identyfikator</th>
+              <th scope="col">Liczba próbek</th>
+              <th scope="col">Zapisano</th>
+              <th scope="col"><span class="sr-only">Akcje</span></th>
+            </tr>
+          </thead>
+          <tbody id="adminUsersBody"></tbody>
+        </table>
+      </div>
+      <p class="msg" id="adminUsersMsg"></p>
+    </section>
+
+    <!-- ADMIN EXPERIMENTS -->
+    <section id="view-admin-exp" class="view">
+      <header class="view-header">
+        <h1>Eksperymenty</h1>
+        <p class="view-sub">Próg decyzyjny jest współdzielony z widokiem „Autoryzacja”</p>
+      </header>
+      <div class="panel-inner">
+        <label class="slider-label" for="expThresholdSlider">
+          Próg decyzyjny (jak w Autoryzacji, cosine −1…1)
+          <input type="range" id="expThresholdSlider" min="-100" max="100" value="16" step="1" />
+          <output id="expThresholdOut" for="expThresholdSlider">0.16</output>
+        </label>
+        <p class="hint-inline">
+          Suwak: −100…+100 odpowiada progowi −1…+1 (ta sama skala co pole „Próg podobieństwa”). Krzywe ROC / FAR / FRR — w notebooku lub skrypcie.
+        </p>
+        <div class="chart-placeholder" id="rocPlaceholder">
+          <span>Miejsce na wykres ROC (wyniki eksperymentów)</span>
+        </div>
+        <h2 class="section-mini">Porównanie 1:1 (dwa obrazy)</h2>
+        <form id="formCompare" class="form-stack compact">
+          <label class="field-label" for="compareThreshold">Próg podobieństwa</label>
+          <input type="number" id="compareThreshold" name="threshold" value="0.16" min="-1" max="1" step="0.01" />
+          <label class="field-label" for="compareImageA">Pierwszy obraz</label>
+          <input type="file" id="compareImageA" name="image_a" accept="image/*" required />
+          <label class="field-label" for="compareImageB">Drugi obraz</label>
+          <input type="file" id="compareImageB" name="image_b" accept="image/*" required />
+          <button type="submit" class="btn secondary">Porównaj obrazy</button>
+        </form>
+        <p class="msg" id="compareMsg"></p>
+        <h2 class="section-mini">Porównanie 1:1 (dwa nagrania głosu)</h2>
+        <form id="formCompareVoice" class="form-stack compact">
+          <label class="field-label" for="compareVoiceThreshold">Próg podobieństwa (głos)</label>
+          <input type="number" id="compareVoiceThreshold" name="threshold" value="0.35" min="-1" max="1" step="0.01" />
+          <label class="field-label" for="compareVoiceA">Pierwsze nagranie</label>
+          <input type="file" id="compareVoiceA" name="audio_a" accept="audio/*" required />
+          <label class="field-label" for="compareVoiceB">Drugie nagranie</label>
+          <input type="file" id="compareVoiceB" name="audio_b" accept="audio/*" required />
+          <button type="submit" class="btn secondary">Porównaj głosy</button>
+        </form>
+        <p class="msg" id="compareVoiceMsg"></p>
+      </div>
+    </section>
+
+    <!-- ADMIN DATASETS -->
+    <section id="view-admin-data" class="view">
+      <header class="view-header">
+        <h1>Zbiory danych</h1>
+        <p class="view-sub">Podział train / dev / test w repozytorium</p>
+      </header>
+      <div class="panel-inner">
+        <ul class="dataset-list">
+          <li><code>biometric_authorization/data/split/train_split.txt</code> — ID tożsamości CelebA (trening)</li>
+          <li><code>biometric_authorization/data/split/valid_split.txt</code> — walidacja</li>
+          <li><code>biometric_authorization/data/split/test_split.txt</code> — test</li>
+          <li><code>biometric_authorization/data/img_align_celeba_cropped/</code> — obrazy 112×112 pod ArcFace</li>
+          <li><code>biometric_authorization/data/voice_split/</code> — listy ID mówców (Common Voice PL)</li>
+          <li><code>biometric_authorization/data/cv-corpus-25.0-2026-03-09/pl/</code> — surowy korpus Common Voice PL (<code>clips/</code>, <code>train.tsv</code>, …) po rozpakowaniu archiwum</li>
+        </ul>
+        <p class="hint-inline">Użytkownicy zapisani w aplikacji to osobna baza (embeddingi) — nie mylić z podziałem CelebA.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

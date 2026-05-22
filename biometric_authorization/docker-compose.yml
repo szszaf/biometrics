@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        VOICE_WEIGHTS_URL: ""
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/system:/app/data/system
+      - ./data/celeba_metadata:/app/data/celeba_metadata:ro
+      - ./data/split:/app/data/split:ro
+      - ./data/img_align_celeba_cropped:/app/data/img_align_celeba_cropped:ro
+      - ./data/voice_split:/app/data/voice_split:ro
+      - ./data/cv-corpus-25.0-2026-03-09:/app/data/cv-corpus-25.0-2026-03-09:ro
+      - ./face_auth:/app/face_auth
+      - ./voice_auth:/app/voice_auth
+      - ./app:/app/app
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+    environment:
+      ARCFACE_WEIGHTS: /app/results/arcface_celeba_best.pth
+      VOICE_WEIGHTS: /app/results/ecapa_cv_pl_best.pth
+      SPEECHBRAIN_ECAPA_SAVEDIR: /app/models/speechbrain_ecapa
+      ENROLL_DB_VOICE_PATH: /app/data/system/enrollments_voice.db
+      SEED_NOTEBOOK_PIPELINE: "1"
