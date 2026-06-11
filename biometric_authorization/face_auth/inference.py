@@ -1,6 +1,7 @@
 import io
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import torch
@@ -9,9 +10,29 @@ from PIL import Image, ImageOps
 from torchvision import transforms
 
 from face_auth.config import EMBEDDING_DIM, INPUT_SIZE
+from face_auth.low_quality import enhance_low_quality_face, make_low_quality_variants
+from face_auth.quality import FaceQualityReport, assess_face_image_quality
 
 if TYPE_CHECKING:
     from face_auth.align import FaceLandmarkerAligner
+
+PreprocessingMode = Literal["standard", "low_quality_robust"]
+
+
+@dataclass(frozen=True)
+class QualityAwareFaceEmbedding:
+    embedding: torch.Tensor
+    quality: FaceQualityReport
+    preprocessing_mode: PreprocessingMode
+
+
+class FaceQualityRejectedError(Exception):
+    def __init__(self, quality: FaceQualityReport):
+        self.quality = quality
+
+    def __str__(self) -> str:
+        reasons = ", ".join(self.quality.warnings) if self.quality.warnings else "unknown"
+        return f"Probka twarzy ma zbyt niska jakosc do bezpiecznego uwierzytelnienia ({reasons})"
 
 
 def default_preprocess():
@@ -59,6 +80,74 @@ def embedding_from_pil(
 
 
 @torch.no_grad()
+def quality_aware_embedding_from_pil(
+    model,
+    device,
+    pil_image: Image.Image,
+    transform=None,
+    face_aligner: "FaceLandmarkerAligner | None" = None,
+) -> QualityAwareFaceEmbedding:
+    pil_image = ImageOps.exif_transpose(pil_image).convert("RGB")
+    aligned = None
+    if face_aligner is not None:
+        aligned = face_aligner.align_pil(pil_image)
+        if aligned is None:
+            enhanced = enhance_low_quality_face(pil_image)
+            aligned = face_aligner.align_pil(enhanced)
+
+    quality = assess_face_image_quality(pil_image, aligned)
+    if quality.estimated_quality == "reject":
+        raise FaceQualityRejectedError(quality)
+
+    if aligned is None:
+        embedding = embedding_from_pil(
+            model,
+            device,
+            pil_image,
+            transform=transform,
+            face_aligner=None,
+        )
+        return QualityAwareFaceEmbedding(
+            embedding=embedding,
+            quality=quality,
+            preprocessing_mode="standard",
+        )
+
+    if quality.estimated_quality == "clean":
+        embedding = embedding_from_pil(
+            model,
+            device,
+            aligned,
+            transform=transform or celeba_cropped_notebook_preprocess(),
+            face_aligner=None,
+        )
+        return QualityAwareFaceEmbedding(
+            embedding=embedding,
+            quality=quality,
+            preprocessing_mode="standard",
+        )
+
+    variants = make_low_quality_variants(aligned)
+    parts = [
+        embedding_from_pil(
+            model,
+            device,
+            variant,
+            transform=transform or celeba_cropped_notebook_preprocess(),
+            face_aligner=None,
+        )
+        for variant in variants
+    ]
+    stacked = torch.stack(parts)
+    embedding = F.normalize(stacked.mean(dim=0), dim=0, eps=1e-12)
+    return QualityAwareFaceEmbedding(
+        embedding=embedding,
+        quality=quality,
+        preprocessing_mode="low_quality_robust",
+    )
+
+
+@torch.no_grad()
 def embedding_from_bytes(
     model,
     device,
@@ -68,6 +157,20 @@ def embedding_from_bytes(
 ):
     pil = Image.open(io.BytesIO(data))
     return embedding_from_pil(
+        model, device, pil, transform=transform, face_aligner=face_aligner
+    )
+
+
+@torch.no_grad()
+def quality_aware_embedding_from_bytes(
+    model,
+    device,
+    data: bytes,
+    transform=None,
+    face_aligner: "FaceLandmarkerAligner | None" = None,
+) -> QualityAwareFaceEmbedding:
+    pil = Image.open(io.BytesIO(data))
+    return quality_aware_embedding_from_pil(
         model, device, pil, transform=transform, face_aligner=face_aligner
     )
 

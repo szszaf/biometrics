@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,18 +11,23 @@ import torch.nn.functional as F
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from face_auth.align import FaceLandmarkerAligner
 from face_auth.config import DEFAULT_FACE_LANDMARKER_MODEL, DEFAULT_WEIGHTS, ENROLL_DB_PATH
 from face_auth.inference import (
+    FaceQualityRejectedError,
     average_embedding_from_bytes_list,
     cosine_similarity,
     embedding_from_bytes,
     embedding_to_numpy,
     numpy_to_embedding,
+    quality_aware_embedding_from_bytes,
 )
+from face_auth.low_quality import enhance_low_quality_face
 from face_auth.model import load_backbone
+from face_auth.quality import FaceQualityReport, assess_face_image_quality
 from face_auth.store import EnrollmentStore
 from voice_auth.config import (
     DEFAULT_SPEECHBRAIN_ECAPA_SAVEDIR,
@@ -34,6 +40,17 @@ from voice_auth.engine import VoiceEmbeddingEngine
 logger = logging.getLogger(__name__)
 
 Modality = Literal["face", "voice"]
+
+
+class FaceQualityResponse(BaseModel):
+    width: int
+    height: int
+    face_aligned: bool
+    blur_score: float
+    brightness_mean: float
+    contrast_std: float
+    estimated_quality: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 def _env_flag(name: str, *, default: bool = True) -> bool:
@@ -51,6 +68,9 @@ class VerifyResponse(BaseModel):
     threshold: float
     user_id: str
     modality: str
+    quality: FaceQualityResponse | None = None
+    preprocessing_mode: str | None = None
+    quality_warnings: list[str] = Field(default_factory=list)
 
 
 class IdentifyHit(BaseModel):
@@ -61,6 +81,9 @@ class IdentifyHit(BaseModel):
 class IdentifyResponse(BaseModel):
     results: list[IdentifyHit]
     modality: str
+    quality: FaceQualityResponse | None = None
+    preprocessing_mode: str | None = None
+    quality_warnings: list[str] = Field(default_factory=list)
 
 
 class UserSummary(BaseModel):
@@ -161,6 +184,38 @@ def _resolve_modality(state, requested: str | None) -> Modality:
     if state.voice_enabled:
         return "voice"
     raise RuntimeError("Brak aktywnej modality biometrycznej")
+
+
+def _face_quality_response(report: FaceQualityReport) -> FaceQualityResponse:
+    return FaceQualityResponse(
+        width=report.width,
+        height=report.height,
+        face_aligned=report.face_aligned,
+        blur_score=report.blur_score,
+        brightness_mean=report.brightness_mean,
+        contrast_std=report.contrast_std,
+        estimated_quality=report.estimated_quality,
+        warnings=list(report.warnings),
+    )
+
+
+def _face_quality_detail(report: FaceQualityReport) -> dict:
+    return {
+        "message": str(FaceQualityRejectedError(report)),
+        "quality": _face_quality_response(report).model_dump(),
+        "quality_warnings": list(report.warnings),
+    }
+
+
+def _assess_face_quality_from_bytes(state, data: bytes) -> FaceQualityResponse:
+    pil_image = Image.open(io.BytesIO(data))
+    pil_image = ImageOps.exif_transpose(pil_image).convert("RGB")
+    aligned = state.face_aligner.align_pil(pil_image) if state.face_aligner else None
+    if aligned is None and state.face_aligner is not None:
+        enhanced = enhance_low_quality_face(pil_image)
+        aligned = state.face_aligner.align_pil(enhanced)
+    report = assess_face_image_quality(pil_image, aligned)
+    return _face_quality_response(report)
 
 
 @asynccontextmanager
@@ -321,6 +376,23 @@ def health(request: Request):
     )
 
 
+@app.post("/face/quality", response_model=FaceQualityResponse, tags=["authentication"])
+async def face_quality(
+    request: Request,
+    image: Annotated[UploadFile | None, File()] = None,
+):
+    st = request.app.state
+    if not st.face_enabled:
+        raise HTTPException(status_code=503, detail="Ocena jakości twarzy wymaga wag ArcFace i MediaPipe.")
+    if image is None:
+        raise HTTPException(status_code=400, detail="Prześlij pole „image”.")
+    data = await image.read()
+    try:
+        return _assess_face_quality_from_bytes(st, data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Nie udało się ocenić obrazu: {e}") from e
+
+
 @app.get("/users", response_model=list[UserSummary], tags=["users"])
 def list_users(request: Request, modality: str | None = Query(None, description="face (domyślnie jeśli włączone) lub voice")):
     st = request.app.state
@@ -473,11 +545,14 @@ async def verify(
             raise HTTPException(status_code=404, detail="Użytkownik nie jest zarejestrowany (twarz)")
         data = await image.read()
         try:
-            probe = embedding_from_bytes(
+            face_result = quality_aware_embedding_from_bytes(
                 st.model, st.device, data, face_aligner=st.face_aligner
             )
+        except FaceQualityRejectedError as e:
+            raise HTTPException(status_code=400, detail=_face_quality_detail(e.quality)) from e
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Nie udało się wczytać obrazu: {e}") from e
+        probe = face_result.embedding
         ref = numpy_to_embedding(stored)
         sim = cosine_similarity(probe, ref)
         return VerifyResponse(
@@ -486,6 +561,9 @@ async def verify(
             threshold=threshold,
             user_id=user_id,
             modality="face",
+            quality=_face_quality_response(face_result.quality),
+            preprocessing_mode=face_result.preprocessing_mode,
+            quality_warnings=list(face_result.quality.warnings),
         )
 
     if audio is None:
@@ -528,11 +606,14 @@ async def identify(
             raise HTTPException(status_code=404, detail="Brak zarejestrowanych użytkowników (twarz)")
         data = await image.read()
         try:
-            probe = embedding_from_bytes(
+            face_result = quality_aware_embedding_from_bytes(
                 st.model, st.device, data, face_aligner=st.face_aligner
             )
+        except FaceQualityRejectedError as e:
+            raise HTTPException(status_code=400, detail=_face_quality_detail(e.quality)) from e
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Nie udało się wczytać obrazu: {e}") from e
+        probe = face_result.embedding
         scored: list[tuple[str, float]] = []
         for uid, arr in rows:
             ref = numpy_to_embedding(arr)
@@ -542,6 +623,9 @@ async def identify(
         return IdentifyResponse(
             results=[IdentifyHit(user_id=u, similarity=s) for u, s in top],
             modality="face",
+            quality=_face_quality_response(face_result.quality),
+            preprocessing_mode=face_result.preprocessing_mode,
+            quality_warnings=list(face_result.quality.warnings),
         )
 
     if audio is None:
@@ -578,17 +662,41 @@ async def compare(
     if image_a is None or image_b is None:
         raise HTTPException(status_code=400, detail="Prześlij image_a i image_b.")
     try:
-        da, db = await image_a.read(), await image_b.read()
-        e1 = embedding_from_bytes(
+        da = await image_a.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Nie udało się wczytać pierwszego obrazu: {e}") from e
+    try:
+        db = await image_b.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Nie udało się wczytać drugiego obrazu: {e}") from e
+    try:
+        r1 = quality_aware_embedding_from_bytes(
             st.model, st.device, da, face_aligner=st.face_aligner
         )
-        e2 = embedding_from_bytes(
+    except FaceQualityRejectedError as e:
+        raise HTTPException(status_code=400, detail=_face_quality_detail(e.quality)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Nie udało się wczytać pierwszego obrazu: {e}") from e
+    try:
+        r2 = quality_aware_embedding_from_bytes(
             st.model, st.device, db, face_aligner=st.face_aligner
         )
+    except FaceQualityRejectedError as e:
+        raise HTTPException(status_code=400, detail=_face_quality_detail(e.quality)) from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Nie udało się wczytać obrazów: {e}") from e
-    sim = cosine_similarity(e1, e2)
-    return {"same_person_guess": sim >= threshold, "similarity": sim, "threshold": threshold, "modality": "face"}
+        raise HTTPException(status_code=400, detail=f"Nie udało się wczytać drugiego obrazu: {e}") from e
+    sim = cosine_similarity(r1.embedding, r2.embedding)
+    return {
+        "same_person_guess": sim >= threshold,
+        "similarity": sim,
+        "threshold": threshold,
+        "modality": "face",
+        "quality_a": _face_quality_response(r1.quality).model_dump(),
+        "quality_b": _face_quality_response(r2.quality).model_dump(),
+        "preprocessing_mode_a": r1.preprocessing_mode,
+        "preprocessing_mode_b": r2.preprocessing_mode,
+        "quality_warnings": sorted(set(r1.quality.warnings + r2.quality.warnings)),
+    }
 
 
 @app.post("/compare_voice", response_model=dict, tags=["authentication"])

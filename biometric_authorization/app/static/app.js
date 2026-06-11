@@ -44,16 +44,24 @@
       }
     }
     if (!res.ok) {
+      const detail =
+        typeof data === "object" && data !== null && Object.prototype.hasOwnProperty.call(data, "detail")
+          ? data.detail
+          : null;
       let msg =
-        typeof data === "object" && data !== null && data.detail
-          ? Array.isArray(data.detail)
-            ? data.detail.map((d) => d.msg || d).join("; ")
-            : String(data.detail)
+        detail
+          ? Array.isArray(detail)
+            ? detail.map((d) => d.msg || d).join("; ")
+            : typeof detail === "object" && detail !== null && detail.message
+              ? String(detail.message)
+              : String(detail)
           : res.statusText;
       if (res.status === 500 && msg === "Internal Server Error") {
         msg = "Błąd serwera — sprawdź logi kontenera.";
       }
-      throw new Error(msg || `HTTP ${res.status}`);
+      const err = new Error(msg || `HTTP ${res.status}`);
+      err.detail = detail;
+      throw err;
     }
     return data;
   }
@@ -64,6 +72,53 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function qualityLabel(quality) {
+    const q = quality?.estimated_quality;
+    if (q === "clean") return "Dobra jakość";
+    if (q === "low_quality") return "Niska jakość";
+    if (q === "reject") return "Próbka odrzucona";
+    return "Brak oceny jakości";
+  }
+
+  function qualityClassName(quality) {
+    const q = quality?.estimated_quality;
+    if (q === "clean") return "good";
+    if (q === "low_quality") return "warn";
+    if (q === "reject") return "bad";
+    return "";
+  }
+
+  function warningLabel(code) {
+    const labels = {
+      face_not_detected: "nie wykryto twarzy",
+      too_small: "twarz lub obraz są zbyt małe",
+      low_resolution: "niska rozdzielczość",
+      too_blurred: "obraz jest zbyt rozmyty",
+      blurred: "rozmycie",
+      too_dark: "obraz jest zbyt ciemny",
+      too_bright: "obraz jest zbyt jasny",
+      too_low_contrast: "kontrast jest zbyt niski",
+      low_contrast: "niski kontrast",
+    };
+    return labels[code] || code;
+  }
+
+  function qualityModeLabel(mode) {
+    if (mode === "low_quality_robust") return "tryb odporny na low-res/CCTV";
+    if (mode === "standard") return "standardowe przetwarzanie";
+    return "tryb nieznany";
+  }
+
+  function isAcceptableEnrollmentQuality(quality) {
+    return quality?.estimated_quality === "clean" || quality?.estimated_quality === "low_quality";
+  }
+
+  async function assessFaceQuality(blob) {
+    const fd = new FormData();
+    fd.append("image", blob, "face.jpg");
+    return api("/face/quality", { method: "POST", body: fd });
   }
 
   /** Sekundy z ms — notacja PL (przecinek dziesiętny). */
@@ -515,6 +570,29 @@
     el.textContent = text || "";
   }
 
+  function renderFaceQualityCard(quality, preprocessingMode) {
+    const card = $("#faceQualityCard");
+    const summary = $("#faceQualitySummary");
+    const list = $("#faceQualityList");
+    if (!card || !summary || !list) return;
+    if (!quality) {
+      card.classList.add("hidden");
+      return;
+    }
+    card.className = `quality-card ${qualityClassName(quality)}`;
+    summary.textContent = `${qualityLabel(quality)} · ${qualityModeLabel(preprocessingMode)}`;
+    const warnings = quality.warnings || [];
+    const details = warnings.length
+      ? warnings.map((warning) => `<li>${escapeHtml(warningLabel(warning))}</li>`).join("")
+      : "<li>Brak ostrzeżeń jakościowych.</li>";
+    list.innerHTML = details;
+  }
+
+  function renderFaceQualityError(err) {
+    const quality = err?.detail?.quality;
+    renderFaceQualityCard(quality, "standard");
+  }
+
   function syncAuthTabs() {
     document.querySelectorAll("[data-auth-tab]").forEach((b) => {
       const on = b.getAttribute("data-auth-tab") === authTab;
@@ -561,6 +639,7 @@
     if (!isFace) {
       stopCamera();
       setCamInlineMsg("");
+      renderFaceQualityCard(null, null);
     } else {
       stopVoiceStreams();
     }
@@ -640,6 +719,7 @@
       syncAuthTabs();
       $("#verifyUserRow")?.classList.toggle("hidden", authTab !== "verify");
       $("#authResult").hidden = true;
+      renderFaceQualityCard(null, null);
       setAuthSteps([serviceModality === "face" ? "Gotowe do skanu" : "Gotowe do nagrania"]);
     });
   });
@@ -720,7 +800,8 @@
     }
     try {
       const blob = await captureBlobFromVideo(camVideo);
-      setAuthSteps(["Klatka zapisana", "Przetwarzanie na serwerze…", "Dopasowanie z bazą…"]);
+      renderFaceQualityCard(null, null);
+      setAuthSteps(["Klatka zapisana", "Ocena jakości obrazu…", "Dopasowanie z bazą…"]);
 
       const th = getThreshold();
       const mq = "modality=face";
@@ -738,12 +819,19 @@
         }
         const top = r.results[0];
         const ok = top.similarity >= th;
-        setAuthSteps(["Klatka zapisana", "Przetwarzanie zakończone", "Dopasowanie zakończone"]);
+        const robust = r.preprocessing_mode === "low_quality_robust";
+        renderFaceQualityCard(r.quality, r.preprocessing_mode);
+        setAuthSteps([
+          "Klatka zapisana",
+          "Ocena jakości zakończona",
+          robust ? "Poprawa próbki low-quality" : "Standardowe przetwarzanie",
+          "Dopasowanie zakończone",
+        ]);
         resultEl.hidden = false;
         resultEl.className = "result-card-auth " + (ok ? "ok" : "bad");
         resultEl.innerHTML = ok
-          ? `<strong>Dostęp przyznany</strong><p>Identyfikator: <code>${escapeHtml(top.user_id)}</code></p><p>Podobieństwo: <strong>${top.similarity.toFixed(4)}</strong> (próg: ${th})</p><p class="hint-inline">Czas: ${dt} s</p>`
-          : `<strong>Odrzucono</strong><p>Najbliższy identyfikator: <code>${escapeHtml(top.user_id)}</code> — ${top.similarity.toFixed(4)} poniżej progu (${th})</p><p class="hint-inline">Czas: ${dt} s</p>`;
+          ? `<strong>Dostęp przyznany</strong><p>Identyfikator: <code>${escapeHtml(top.user_id)}</code></p><p>Podobieństwo: <strong>${top.similarity.toFixed(4)}</strong> (próg: ${th})</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; wynik uzyskano w trybie odpornym na low-res/CCTV.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`
+          : `<strong>Odrzucono</strong><p>Najbliższy identyfikator: <code>${escapeHtml(top.user_id)}</code> — ${top.similarity.toFixed(4)} poniżej progu (${th})</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; spróbuj podejść bliżej kamery lub poprawić oświetlenie.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`;
       } else {
         const uid = $("#verifyUserSelect")?.value;
         if (!uid) {
@@ -756,14 +844,22 @@
         const q = new URLSearchParams({ threshold: String(th), modality: "face" });
         const r = await api(`/verify?${q}`, { method: "POST", body: fd });
         const dt = ((performance.now() - t0) / 1000).toFixed(2);
-        setAuthSteps(["Klatka zapisana", "Przetwarzanie zakończone", "Weryfikacja zakończona"]);
+        const robust = r.preprocessing_mode === "low_quality_robust";
+        renderFaceQualityCard(r.quality, r.preprocessing_mode);
+        setAuthSteps([
+          "Klatka zapisana",
+          "Ocena jakości zakończona",
+          robust ? "Poprawa próbki low-quality" : "Standardowe przetwarzanie",
+          "Weryfikacja zakończona",
+        ]);
         resultEl.hidden = false;
         resultEl.className = "result-card-auth " + (r.accepted ? "ok" : "bad");
         resultEl.innerHTML = r.accepted
-          ? `<strong>Dostęp przyznany</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p><p class="hint-inline">Czas: ${dt} s</p>`
-          : `<strong>Odrzucono</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p><p class="hint-inline">Czas: ${dt} s</p>`;
+          ? `<strong>Dostęp przyznany</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; wynik uzyskano w trybie odpornym na low-res/CCTV.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`
+          : `<strong>Odrzucono</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; spróbuj podejść bliżej kamery lub poprawić oświetlenie.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`;
       }
     } catch (e) {
+      renderFaceQualityError(e);
       setAuthSteps(["Wystąpił błąd", String(e.message)]);
       resultEl.hidden = false;
       resultEl.className = "result-card-auth bad";
@@ -926,25 +1022,26 @@
     const btn = $("#btnSubmitEnroll");
     if (!strip || !cnt || !btn) return;
     cnt.textContent = String(enrollBlobs.length);
+    const acceptableCount = enrollBlobs.filter((item) => isAcceptableEnrollmentQuality(item.quality)).length;
     strip.querySelectorAll("img").forEach((img) => {
       if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
     });
     strip.innerHTML = "";
-    enrollBlobs.forEach((blob) => {
-      const url = URL.createObjectURL(blob);
+    enrollBlobs.forEach((item) => {
+      const url = URL.createObjectURL(item.blob);
       const wrap = document.createElement("div");
-      wrap.className = "shot-thumb";
+      wrap.className = `shot-thumb is-${qualityClassName(item.quality) || "bad"}`;
       wrap.setAttribute("role", "listitem");
-      wrap.innerHTML = `<img alt="" src="${url}" /><button type="button" aria-label="Usuń klatkę z listy">×</button>`;
+      wrap.innerHTML = `<img alt="" src="${url}" /><span class="shot-quality-badge">${escapeHtml(qualityLabel(item.quality))}</span><button type="button" aria-label="Usuń klatkę z listy">×</button>`;
       wrap.querySelector("button").addEventListener("click", () => {
-        const i = enrollBlobs.indexOf(blob);
+        const i = enrollBlobs.indexOf(item);
         if (i >= 0) enrollBlobs.splice(i, 1);
         URL.revokeObjectURL(url);
         renderShotStrip();
       });
       strip.appendChild(wrap);
     });
-    btn.disabled = enrollBlobs.length < 3;
+    btn.disabled = acceptableCount < 3;
   }
 
   function renderVoiceClipStrip() {
@@ -986,8 +1083,16 @@
         return;
       }
       const blob = await captureBlobFromVideo(enrollVideo);
-      enrollBlobs.push(blob);
+      msg.textContent = "Ocena jakości klatki…";
+      const quality = await assessFaceQuality(blob);
+      enrollBlobs.push({ blob, quality });
       renderShotStrip();
+      const acceptableCount = enrollBlobs.filter((item) => isAcceptableEnrollmentQuality(item.quality)).length;
+      msg.textContent = isAcceptableEnrollmentQuality(quality)
+        ? `Dodano klatkę: ${qualityLabel(quality)}. Akceptowalne klatki: ${acceptableCount}/3.`
+        : `Klatka odrzucona jakościowo: ${qualityLabel(quality)}. Dodaj wyraźniejsze ujęcie.`;
+      msg.classList.toggle("ok", isAcceptableEnrollmentQuality(quality));
+      msg.classList.toggle("error", !isAcceptableEnrollmentQuality(quality));
     } catch (e) {
       msg.textContent = e.message;
       msg.classList.add("error");
@@ -1015,13 +1120,19 @@
       msg.classList.add("error");
       return;
     }
+    const acceptableShots = enrollBlobs.filter((item) => isAcceptableEnrollmentQuality(item.quality));
+    if (acceptableShots.length < 3) {
+      msg.textContent = "Potrzebne są co najmniej 3 akceptowalne jakościowo klatki.";
+      msg.classList.add("error");
+      return;
+    }
     msg.textContent = "Zapisywanie embeddingu…";
     try {
       const fd = new FormData();
-      enrollBlobs.forEach((b) => fd.append("images", b, "shot.jpg"));
+      acceptableShots.forEach((item) => fd.append("images", item.blob, "shot.jpg"));
       await api(`/users/${encodeURIComponent(uid)}/enroll_multi?modality=face`, { method: "POST", body: fd });
       msg.textContent =
-        "Zapisano w bazie (" + phraseKlatek(enrollBlobs.length) + ", uśredniony wektor twarzy).";
+        "Zapisano w bazie (" + phraseKlatek(acceptableShots.length) + ", uśredniony wektor twarzy).";
       msg.classList.add("ok");
       enrollBlobs.length = 0;
       renderShotStrip();
@@ -1230,8 +1341,11 @@
     ev.preventDefault();
     const form = ev.target;
     const msg = $("#compareMsg");
+    const qualityCard = $("#compareQualityCard");
+    const qualityList = $("#compareQualityList");
     msg.textContent = "";
     msg.className = "msg";
+    qualityCard?.classList.add("hidden");
     const fa = form.image_a?.files?.[0];
     const fb = form.image_b?.files?.[0];
     if (!fa || !fb) {
@@ -1245,11 +1359,23 @@
     const q = new URLSearchParams({ threshold: String(form.threshold.value) });
     try {
       const r = await api(`/compare?${q}`, { method: "POST", body: fd });
-      msg.textContent = `Ta sama osoba (heurystycznie): ${r.same_person_guess ? "tak" : "nie"} — podobieństwo ${r.similarity.toFixed(4)}`;
+      msg.textContent = `Ta sama osoba (heurystycznie): ${r.same_person_guess ? "tak" : "nie"} — podobieństwo ${r.similarity.toFixed(4)}. Tryby: A ${qualityModeLabel(r.preprocessing_mode_a)}, B ${qualityModeLabel(r.preprocessing_mode_b)}.`;
       msg.classList.add("ok");
+      if (qualityCard && qualityList) {
+        qualityCard.className = "quality-card";
+        qualityList.innerHTML = [
+          `<li>Obraz A: ${escapeHtml(qualityLabel(r.quality_a))} (${escapeHtml(qualityModeLabel(r.preprocessing_mode_a))})</li>`,
+          `<li>Obraz B: ${escapeHtml(qualityLabel(r.quality_b))} (${escapeHtml(qualityModeLabel(r.preprocessing_mode_b))})</li>`,
+          `<li>Ostrzeżenia: ${escapeHtml((r.quality_warnings || []).map(warningLabel).join(", ") || "brak")}</li>`,
+        ].join("");
+      }
     } catch (e) {
       msg.textContent = e.message;
       msg.classList.add("error");
+      if (qualityCard && qualityList && e?.detail?.quality) {
+        qualityCard.className = `quality-card ${qualityClassName(e.detail.quality)}`;
+        qualityList.innerHTML = `<li>${escapeHtml(qualityLabel(e.detail.quality))}: ${escapeHtml((e.detail.quality_warnings || []).map(warningLabel).join(", "))}</li>`;
+      }
     }
   });
 

@@ -123,6 +123,11 @@
               <li data-step="idle">Gotowe do skanu</li>
             </ul>
           </div>
+          <div class="quality-card hidden" id="faceQualityCard" aria-live="polite">
+            <h2 class="status-title">Jakość obrazu</h2>
+            <p class="quality-summary" id="faceQualitySummary">Brak próbki</p>
+            <ul class="quality-list" id="faceQualityList"></ul>
+          </div>
           <div class="result-card-auth" id="authResult" hidden role="region" aria-live="polite" aria-label="Wynik autoryzacji"></div>
         </div>
       </div>
@@ -148,6 +153,7 @@
           <label class="field-label" for="enrollUserId">Identyfikator użytkownika</label>
           <input type="text" id="enrollUserId" autocomplete="username" placeholder="np. jan_kowalski" />
           <p class="hint-inline">Co najmniej <strong>3</strong> klatki; wygodnie <strong>5–10</strong>. Litery, cyfry i podkreślenia.</p>
+          <p class="hint-inline">Profil referencyjny powinien być możliwie wyraźny. Słabsze próbki mogą być obsłużone przy logowaniu, ale do zapisu wymagane są co najmniej 3 akceptowalne klatki.</p>
           <div class="camera-shell enroll-cam">
             <video id="enrollVideo" playsinline muted autoplay aria-label="Podgląd kamery — rejestracja"></video>
             <div class="face-guide" aria-hidden="true"></div>
@@ -278,6 +284,10 @@
           <button type="submit" class="btn secondary">Porównaj obrazy</button>
         </form>
         <p class="msg" id="compareMsg"></p>
+        <div class="quality-card hidden" id="compareQualityCard" aria-live="polite">
+          <h2 class="status-title">Jakość porównywanych obrazów</h2>
+          <ul class="quality-list" id="compareQualityList"></ul>
+        </div>
         <h2 class="section-mini">Porównanie 1:1 (dwa nagrania głosu)</h2>
         <form id="formCompareVoice" class="form-stack compact">
           <label class="field-label" for="compareVoiceThreshold">Próg podobieństwa (głos)</label>
