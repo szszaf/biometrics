@@ -11,6 +11,7 @@ Zawartość tego katalogu **nie jest wersjonowana** (`.gitignore`: `biometric_au
 | `img_align_celeba_cropped/cropped/` | nie | Cropy 112×112 JPG — duże, tylko lokalnie |
 | `cv-corpus-*/pl/` | nie | Common Voice PL po rozpakowaniu archiwum |
 | `system/` | nie | SQLite + WAL (`enrollments*.db`) — tworzone w runtime |
+| `system/experiments/low_res_face_latest.json` | nie | Ostatni wynik eksperymentu low-res / CCTV uruchamianego z GUI |
 
 Wagi modeli: `../results/` (`.pth` w `.gitignore` w korzeniu projektu). Szczegóły uruchomienia: główne `README.md` repozytorium.
 

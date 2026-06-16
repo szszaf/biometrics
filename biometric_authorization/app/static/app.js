@@ -20,6 +20,7 @@
   let sharedStream = null;
   let voiceStreamAuth = null;
   let voiceStreamEnroll = null;
+  let lowResExperimentPollId = 0;
   let authTab = "identify";
   const enrollBlobs = [];
   const enrollVoiceBlobs = [];
@@ -109,6 +110,57 @@
     if (mode === "low_quality_robust") return "tryb odporny na low-res/CCTV";
     if (mode === "standard") return "standardowe przetwarzanie";
     return "tryb nieznany";
+  }
+
+  function formatPercent(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return "—";
+    return `${(numberValue * 100).toFixed(2)}%`;
+  }
+
+  function formatPp(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return "—";
+    return `${numberValue.toFixed(2)} p.p.`;
+  }
+
+  function formatDuration(seconds) {
+    const numberValue = Number(seconds);
+    if (!Number.isFinite(numberValue) || numberValue < 0) return "—";
+    const rounded = Math.round(numberValue);
+    const minutes = Math.floor(rounded / 60);
+    const secs = rounded % 60;
+    if (minutes <= 0) return `${secs} s`;
+    return `${minutes} min ${String(secs).padStart(2, "0")} s`;
+  }
+
+  function experimentStageLabel(stage) {
+    const labels = {
+      initializing: "Inicjalizacja",
+      loading_people: "Wczytywanie osób",
+      loading_model: "Wczytywanie modelu",
+      building_references: "Budowanie profili referencyjnych",
+      clean_samples: "Próbki czyste",
+      low_res_samples: "Próbki trudne low-res/CCTV",
+      done: "Zakończono",
+      failed: "Błąd",
+    };
+    return labels[stage] || stage || "—";
+  }
+
+  function experimentProgressText(progress) {
+    if (!progress) return "";
+    const completed = Number(progress.completed || 0);
+    const total = Number(progress.total || 0);
+    const percent = Number(progress.percent || 0);
+    return ` Etap: ${experimentStageLabel(progress.stage)} · ${completed}/${total} prób (${percent.toFixed(1)}%) · czas: ${formatDuration(progress.elapsed_seconds)} · pozostało ok.: ${formatDuration(progress.eta_seconds)}`;
+  }
+
+  function experimentStatusLabel(status) {
+    if (status === "running") return "Trwa eksperyment…";
+    if (status === "done") return "Eksperyment zakończony.";
+    if (status === "failed") return "Eksperyment zakończony błędem.";
+    return "Eksperyment nieuruchomiony.";
   }
 
   function isAcceptableEnrollmentQuality(quality) {
@@ -553,6 +605,61 @@
     });
   }
 
+  function blobToImage(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.addEventListener("load", () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      });
+      img.addEventListener("error", () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Nie udało się odczytać klatki do symulacji jakości."));
+      });
+      img.src = url;
+    });
+  }
+
+  async function applyFaceQualitySimulation(blob) {
+    const selected = $("#faceQualitySimulation")?.value || "none";
+    if (selected === "none") return blob;
+    const size = parseInt(selected, 10);
+    if (!Number.isFinite(size) || size <= 0) return blob;
+    const img = await blobToImage(blob);
+    const source = document.createElement("canvas");
+    source.width = img.naturalWidth || img.width;
+    source.height = img.naturalHeight || img.height;
+    const sourceCtx = source.getContext("2d");
+    if (!sourceCtx || !source.width || !source.height) return blob;
+    sourceCtx.drawImage(img, 0, 0, source.width, source.height);
+
+    const small = document.createElement("canvas");
+    small.width = size;
+    small.height = size;
+    const smallCtx = small.getContext("2d");
+    if (!smallCtx) return blob;
+    smallCtx.imageSmoothingEnabled = true;
+    smallCtx.imageSmoothingQuality = "low";
+    smallCtx.drawImage(source, 0, 0, size, size);
+
+    const out = document.createElement("canvas");
+    out.width = source.width;
+    out.height = source.height;
+    const outCtx = out.getContext("2d");
+    if (!outCtx) return blob;
+    outCtx.imageSmoothingEnabled = true;
+    outCtx.imageSmoothingQuality = "low";
+    outCtx.drawImage(small, 0, 0, out.width, out.height);
+    return new Promise((resolve, reject) => {
+      out.toBlob(
+        (simulated) => (simulated ? resolve(simulated) : reject(new Error("Nie udało się zasymulować jakości obrazu."))),
+        "image/jpeg",
+        0.82
+      );
+    });
+  }
+
   function setAuthSteps(lines) {
     const ul = $("#authSteps");
     if (!ul) return;
@@ -700,6 +807,7 @@
     });
     if (targetId === "view-admin-dash") loadDashboard();
     if (targetId === "view-admin-users") loadAdminUsers();
+    if (targetId === "view-admin-exp") refreshLowResExperimentStatus();
   }
 
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -766,6 +874,15 @@
 
   $("#expThresholdSlider")?.addEventListener("input", syncInputFromSlider);
 
+  $("#faceQualitySimulation")?.addEventListener("change", () => {
+    const selected = $("#faceQualitySimulation")?.value || "none";
+    setCamInlineMsg(
+      selected === "none"
+        ? ""
+        : `Symulacja jakości aktywna: klatka zostanie zdegradowana do ${selected}x${selected}.`
+    );
+  });
+
   async function loadVerifyUserOptions() {
     const sel = $("#verifyUserSelect");
     if (!sel) return;
@@ -799,7 +916,8 @@
       scanBtn.disabled = true;
     }
     try {
-      const blob = await captureBlobFromVideo(camVideo);
+      let blob = await captureBlobFromVideo(camVideo);
+      blob = await applyFaceQualitySimulation(blob);
       renderFaceQualityCard(null, null);
       setAuthSteps(["Klatka zapisana", "Ocena jakości obrazu…", "Dopasowanie z bazą…"]);
 
@@ -1287,6 +1405,113 @@
     }
   }
 
+  function setLowResExperimentRunning(isRunning) {
+    const runBtn = $("#btnRunLowResExperiment");
+    if (runBtn) {
+      runBtn.disabled = Boolean(isRunning);
+      runBtn.setAttribute("aria-busy", isRunning ? "true" : "false");
+    }
+  }
+
+  function renderLowResExperimentResult(result) {
+    const panel = $("#lowResExperimentResult");
+    const grid = $("#lowResExperimentGrid");
+    if (!panel || !grid || !result) return;
+    panel.classList.remove("hidden");
+    if (result.status !== "done") {
+      grid.innerHTML = `<div class="experiment-metric-card bad"><div class="label">Status</div><div class="value">${escapeHtml(result.message || "Brak poprawnego wyniku")}</div></div>`;
+      return;
+    }
+    const passes = Boolean(result.passes_p3_requirement);
+    grid.innerHTML = [
+      metricCard("Użytkownicy", String(result.actual_users ?? "—")),
+      metricCard("Low-res test", (result.requested?.low_res_sizes || []).map((size) => `${size}x${size}`).join(", ") || "—"),
+      metricCard("FRR clean", formatPercent(result.clean?.frr)),
+      metricCard("FAR clean", formatPercent(result.clean?.far)),
+      metricCard("FRR low-res standard", formatPercent(result.low_res_standard?.frr)),
+      metricCard("FRR low-res robust", formatPercent(result.low_res_robust?.frr)),
+      metricCard("FAR low-res robust", formatPercent(result.low_res_robust?.far)),
+      metricCard("Delta FRR", formatPp(result.frr_delta_pp), passes ? "ok" : "bad"),
+      metricCard("Wymaganie P3", passes ? "Spełnione" : "Niespełnione", passes ? "ok" : "bad"),
+      metricCard("Odrzucane jakościowo", (result.requested?.rejected_sizes || []).map((size) => `${size}x${size}`).join(", ") || "—"),
+      metricCard("Plik JSON", result.output_path ? escapeHtml(result.output_path) : "—"),
+    ].join("");
+  }
+
+  function metricCard(label, value, stateClass = "") {
+    return `<div class="experiment-metric-card ${stateClass}"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`;
+  }
+
+  async function loadLowResExperimentLatest() {
+    const msg = $("#lowResExperimentMsg");
+    try {
+      const result = await api("/admin/experiments/low-res/latest");
+      renderLowResExperimentResult(result);
+      if (msg && result.status === "done") {
+        msg.textContent = `Ostatni wynik: ${result.passes_p3_requirement ? "spełnia" : "nie spełnia"} wymagania P3.`;
+        msg.className = result.passes_p3_requirement ? "msg ok" : "msg error";
+      }
+    } catch (e) {
+      if (msg && !msg.textContent) {
+        msg.textContent = "Brak zapisanego wyniku eksperymentu.";
+        msg.className = "msg";
+      }
+    }
+  }
+
+  async function refreshLowResExperimentStatus() {
+    const msg = $("#lowResExperimentMsg");
+    try {
+      const status = await api("/admin/experiments/low-res/status");
+      const running = status.status === "running";
+      setLowResExperimentRunning(running);
+      if (msg) {
+        msg.textContent = `${experimentStatusLabel(status.status)}${experimentProgressText(status.progress)} Plik: ${status.output_path}`;
+        msg.className = status.status === "failed" ? "msg error" : "msg";
+      }
+      if (running && !lowResExperimentPollId) {
+        lowResExperimentPollId = window.setInterval(refreshLowResExperimentStatus, 1000);
+      }
+      if (!running && lowResExperimentPollId) {
+        window.clearInterval(lowResExperimentPollId);
+        lowResExperimentPollId = 0;
+      }
+      if (!running) await loadLowResExperimentLatest();
+    } catch (e) {
+      setLowResExperimentRunning(false);
+      if (msg) {
+        msg.textContent = `Nie udało się pobrać statusu eksperymentu: ${e.message}`;
+        msg.className = "msg error";
+      }
+    }
+  }
+
+  async function runLowResExperiment() {
+    const msg = $("#lowResExperimentMsg");
+    setLowResExperimentRunning(true);
+    if (msg) {
+      msg.textContent = "Uruchamianie eksperymentu low-res / CCTV…";
+      msg.className = "msg";
+    }
+    try {
+      const threshold = getThreshold();
+      const status = await api(`/admin/experiments/low-res/run?${new URLSearchParams({ threshold: String(threshold) })}`, {
+        method: "POST",
+      });
+      if (msg) {
+        msg.textContent = `${experimentStatusLabel(status.status)}${experimentProgressText(status.progress)} Plik: ${status.output_path}`;
+        msg.className = "msg";
+      }
+      await refreshLowResExperimentStatus();
+    } catch (e) {
+      setLowResExperimentRunning(false);
+      if (msg) {
+        msg.textContent = `Nie udało się uruchomić eksperymentu: ${e.message}`;
+        msg.className = "msg error";
+      }
+    }
+  }
+
   async function loadAdminUsers() {
     const tbody = $("#adminUsersBody");
     const msg = $("#adminUsersMsg");
@@ -1336,6 +1561,8 @@
 
   $("#btnAdminRefreshUsers")?.addEventListener("click", loadAdminUsers);
   $("#adminModalitySelect")?.addEventListener("change", loadAdminUsers);
+  $("#btnRunLowResExperiment")?.addEventListener("click", runLowResExperiment);
+  $("#btnRefreshLowResExperiment")?.addEventListener("click", refreshLowResExperimentStatus);
 
   $("#formCompare")?.addEventListener("submit", async (ev) => {
     ev.preventDefault();

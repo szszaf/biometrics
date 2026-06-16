@@ -1,7 +1,12 @@
 import io
+import json
 import logging
 import os
+import subprocess
+import sys
+import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -121,6 +126,16 @@ class HealthResponse(BaseModel):
     voice_weights: str | None = None
 
 
+class ExperimentStatusResponse(BaseModel):
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    output_path: str
+    returncode: int | None = None
+    message: str | None = None
+    progress: dict | None = None
+
+
 def _weights_path() -> Path:
     p = os.environ.get("ARCFACE_WEIGHTS", "").strip()
     return Path(p) if p else DEFAULT_WEIGHTS
@@ -218,10 +233,101 @@ def _assess_face_quality_from_bytes(state, data: bytes) -> FaceQualityResponse:
     return _face_quality_response(report)
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _experiment_status_response(state) -> ExperimentStatusResponse:
+    with state.low_res_experiment_lock:
+        raw = dict(state.low_res_experiment)
+    progress = None
+    if LOW_RES_EXPERIMENT_OUTPUT.is_file():
+        try:
+            with open(LOW_RES_EXPERIMENT_OUTPUT, "r", encoding="utf-8") as handle:
+                latest = json.load(handle)
+            progress = latest.get("progress")
+        except Exception:
+            progress = None
+    return ExperimentStatusResponse(
+        status=str(raw.get("status") or "idle"),
+        started_at=raw.get("started_at"),
+        finished_at=raw.get("finished_at"),
+        output_path=str(raw.get("output_path") or LOW_RES_EXPERIMENT_OUTPUT),
+        returncode=raw.get("returncode"),
+        message=raw.get("message"),
+        progress=progress,
+    )
+
+
+def _read_low_res_experiment_result() -> dict:
+    if not LOW_RES_EXPERIMENT_OUTPUT.is_file():
+        raise HTTPException(status_code=404, detail="Brak zapisanego wyniku eksperymentu low-res.")
+    with open(LOW_RES_EXPERIMENT_OUTPUT, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _run_low_res_experiment_job(state, threshold: float) -> None:
+    app_dir = Path(__file__).resolve().parent.parent
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(app_dir) if not existing_pythonpath else f"{app_dir}{os.pathsep}{existing_pythonpath}"
+    )
+    command = [
+        sys.executable,
+        str(LOW_RES_EXPERIMENT_SCRIPT),
+        "--output",
+        str(LOW_RES_EXPERIMENT_OUTPUT),
+        "--threshold",
+        str(threshold),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(app_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=None,
+            check=False,
+        )
+    except Exception as e:
+        with state.low_res_experiment_lock:
+            state.low_res_experiment.update(
+                {
+                    "status": "failed",
+                    "finished_at": _utc_now(),
+                    "returncode": None,
+                    "message": str(e),
+                }
+            )
+        return
+
+    message = completed.stderr.strip() or completed.stdout.strip() or None
+    with state.low_res_experiment_lock:
+        state.low_res_experiment.update(
+            {
+                "status": "done" if completed.returncode == 0 else "failed",
+                "finished_at": _utc_now(),
+                "returncode": completed.returncode,
+                "message": message,
+            }
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     app.state.device = device
+    app.state.low_res_experiment_lock = threading.Lock()
+    app.state.low_res_experiment = {
+        "status": "idle",
+        "started_at": None,
+        "finished_at": None,
+        "returncode": None,
+        "message": None,
+        "output_path": str(LOW_RES_EXPERIMENT_OUTPUT),
+    }
 
     app.state.face_enabled = _face_assets_available()
     app.state.voice_enabled = False
@@ -321,6 +427,14 @@ app = FastAPI(
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+LOW_RES_EXPERIMENT_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "evaluate_low_res_face.py"
+LOW_RES_EXPERIMENT_OUTPUT = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "system"
+    / "experiments"
+    / "low_res_face_latest.json"
+)
 
 
 @app.get("/")
@@ -513,6 +627,50 @@ def admin_summary(request: Request):
         note="W query parametru „modality” podaj face lub voice przy listach / enroll / verify / identify. "
         "FAR/FRR — raport z notebooków.",
     )
+
+
+@app.post("/admin/experiments/low-res/run", response_model=ExperimentStatusResponse, tags=["admin"])
+def run_low_res_experiment(
+    request: Request,
+    threshold: float = Query(0.16, ge=-1.0, le=1.0),
+):
+    st = request.app.state
+    if not st.face_enabled:
+        raise HTTPException(status_code=503, detail="Eksperyment low-res wymaga włączonej modality twarzy.")
+    if not LOW_RES_EXPERIMENT_SCRIPT.is_file():
+        raise HTTPException(status_code=500, detail="Brak skryptu eksperymentu low-res.")
+    with st.low_res_experiment_lock:
+        if st.low_res_experiment.get("status") == "running":
+            should_start = False
+        else:
+            st.low_res_experiment = {
+                "status": "running",
+                "started_at": _utc_now(),
+                "finished_at": None,
+                "returncode": None,
+                "message": "Eksperyment low-res został uruchomiony.",
+                "output_path": str(LOW_RES_EXPERIMENT_OUTPUT),
+            }
+            should_start = True
+    if not should_start:
+        return _experiment_status_response(st)
+    worker = threading.Thread(
+        target=_run_low_res_experiment_job,
+        args=(st, threshold),
+        daemon=True,
+    )
+    worker.start()
+    return _experiment_status_response(st)
+
+
+@app.get("/admin/experiments/low-res/status", response_model=ExperimentStatusResponse, tags=["admin"])
+def low_res_experiment_status(request: Request):
+    return _experiment_status_response(request.app.state)
+
+
+@app.get("/admin/experiments/low-res/latest", response_model=dict, tags=["admin"])
+def latest_low_res_experiment():
+    return _read_low_res_experiment_result()
 
 
 @app.delete("/users/{user_id}", status_code=204, response_class=Response, tags=["users"])

@@ -16,6 +16,7 @@ services:
       - ./face_auth:/app/face_auth
       - ./voice_auth:/app/voice_auth
       - ./app:/app/app
+      - ./scripts:/app/scripts
     command:
       - uvicorn
       - app.main:app

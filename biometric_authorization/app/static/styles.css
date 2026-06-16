@@ -494,6 +494,21 @@ body.app-root {
   margin-right: auto;
 }
 
+.quality-sim-control {
+  width: min(100%, calc(min(420px, 85vh) * 4 / 3));
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.quality-sim-control select {
+  width: 100%;
+}
+
 .cam-inline-msg {
   margin: 0.35rem 0 0;
   min-height: 0;
@@ -926,6 +941,67 @@ body.app-root {
   font-size: 0.85rem;
   text-align: center;
   padding: 1rem;
+}
+
+.experiment-run-card {
+  margin: 0.75rem 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface2);
+}
+
+.experiment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.experiment-result {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.experiment-result-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.experiment-result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.65rem;
+}
+
+.experiment-metric-card {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.experiment-metric-card .label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.experiment-metric-card .value {
+  margin-top: 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.experiment-metric-card.ok {
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.experiment-metric-card.bad {
+  border-color: rgba(248, 113, 113, 0.45);
 }
 
 .section-mini {

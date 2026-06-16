@@ -36,6 +36,7 @@ print('SpeechBrain ECAPA cache OK')"
 COPY face_auth ./face_auth
 COPY voice_auth ./voice_auth
 COPY app ./app
+COPY scripts ./scripts
 COPY results ./results
 ARG VOICE_WEIGHTS_URL=""
 RUN set -e; \
