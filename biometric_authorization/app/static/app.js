@@ -20,6 +20,7 @@
   let sharedStream = null;
   let voiceStreamAuth = null;
   let voiceStreamEnroll = null;
+  let lowResExperimentPollId = 0;
   let authTab = "identify";
   const enrollBlobs = [];
   const enrollVoiceBlobs = [];
@@ -44,16 +45,24 @@
       }
     }
     if (!res.ok) {
+      const detail =
+        typeof data === "object" && data !== null && Object.prototype.hasOwnProperty.call(data, "detail")
+          ? data.detail
+          : null;
       let msg =
-        typeof data === "object" && data !== null && data.detail
-          ? Array.isArray(data.detail)
-            ? data.detail.map((d) => d.msg || d).join("; ")
-            : String(data.detail)
+        detail
+          ? Array.isArray(detail)
+            ? detail.map((d) => d.msg || d).join("; ")
+            : typeof detail === "object" && detail !== null && detail.message
+              ? String(detail.message)
+              : String(detail)
           : res.statusText;
       if (res.status === 500 && msg === "Internal Server Error") {
         msg = "Błąd serwera — sprawdź logi kontenera.";
       }
-      throw new Error(msg || `HTTP ${res.status}`);
+      const err = new Error(msg || `HTTP ${res.status}`);
+      err.detail = detail;
+      throw err;
     }
     return data;
   }
@@ -64,6 +73,104 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function qualityLabel(quality) {
+    const q = quality?.estimated_quality;
+    if (q === "clean") return "Dobra jakość";
+    if (q === "low_quality") return "Niska jakość";
+    if (q === "reject") return "Próbka odrzucona";
+    return "Brak oceny jakości";
+  }
+
+  function qualityClassName(quality) {
+    const q = quality?.estimated_quality;
+    if (q === "clean") return "good";
+    if (q === "low_quality") return "warn";
+    if (q === "reject") return "bad";
+    return "";
+  }
+
+  function warningLabel(code) {
+    const labels = {
+      face_not_detected: "nie wykryto twarzy",
+      too_small: "twarz lub obraz są zbyt małe",
+      low_resolution: "niska rozdzielczość",
+      too_blurred: "obraz jest zbyt rozmyty",
+      blurred: "rozmycie",
+      too_dark: "obraz jest zbyt ciemny",
+      too_bright: "obraz jest zbyt jasny",
+      too_low_contrast: "kontrast jest zbyt niski",
+      low_contrast: "niski kontrast",
+    };
+    return labels[code] || code;
+  }
+
+  function qualityModeLabel(mode) {
+    if (mode === "low_quality_robust") return "tryb odporny na low-res/CCTV";
+    if (mode === "standard") return "standardowe przetwarzanie";
+    return "tryb nieznany";
+  }
+
+  function formatPercent(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return "—";
+    return `${(numberValue * 100).toFixed(2)}%`;
+  }
+
+  function formatPp(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return "—";
+    return `${numberValue.toFixed(2)} p.p.`;
+  }
+
+  function formatDuration(seconds) {
+    const numberValue = Number(seconds);
+    if (!Number.isFinite(numberValue) || numberValue < 0) return "—";
+    const rounded = Math.round(numberValue);
+    const minutes = Math.floor(rounded / 60);
+    const secs = rounded % 60;
+    if (minutes <= 0) return `${secs} s`;
+    return `${minutes} min ${String(secs).padStart(2, "0")} s`;
+  }
+
+  function experimentStageLabel(stage) {
+    const labels = {
+      initializing: "Inicjalizacja",
+      loading_people: "Wczytywanie osób",
+      loading_model: "Wczytywanie modelu",
+      building_references: "Budowanie profili referencyjnych",
+      clean_samples: "Próbki czyste",
+      low_res_samples: "Próbki trudne low-res/CCTV",
+      done: "Zakończono",
+      failed: "Błąd",
+    };
+    return labels[stage] || stage || "—";
+  }
+
+  function experimentProgressText(progress) {
+    if (!progress) return "";
+    const completed = Number(progress.completed || 0);
+    const total = Number(progress.total || 0);
+    const percent = Number(progress.percent || 0);
+    return ` Etap: ${experimentStageLabel(progress.stage)} · ${completed}/${total} prób (${percent.toFixed(1)}%) · czas: ${formatDuration(progress.elapsed_seconds)} · pozostało ok.: ${formatDuration(progress.eta_seconds)}`;
+  }
+
+  function experimentStatusLabel(status) {
+    if (status === "running") return "Trwa eksperyment…";
+    if (status === "done") return "Eksperyment zakończony.";
+    if (status === "failed") return "Eksperyment zakończony błędem.";
+    return "Eksperyment nieuruchomiony.";
+  }
+
+  function isAcceptableEnrollmentQuality(quality) {
+    return quality?.estimated_quality === "clean" || quality?.estimated_quality === "low_quality";
+  }
+
+  async function assessFaceQuality(blob) {
+    const fd = new FormData();
+    fd.append("image", blob, "face.jpg");
+    return api("/face/quality", { method: "POST", body: fd });
   }
 
   /** Sekundy z ms — notacja PL (przecinek dziesiętny). */
@@ -498,6 +605,61 @@
     });
   }
 
+  function blobToImage(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.addEventListener("load", () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      });
+      img.addEventListener("error", () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Nie udało się odczytać klatki do symulacji jakości."));
+      });
+      img.src = url;
+    });
+  }
+
+  async function applyFaceQualitySimulation(blob) {
+    const selected = $("#faceQualitySimulation")?.value || "none";
+    if (selected === "none") return blob;
+    const size = parseInt(selected, 10);
+    if (!Number.isFinite(size) || size <= 0) return blob;
+    const img = await blobToImage(blob);
+    const source = document.createElement("canvas");
+    source.width = img.naturalWidth || img.width;
+    source.height = img.naturalHeight || img.height;
+    const sourceCtx = source.getContext("2d");
+    if (!sourceCtx || !source.width || !source.height) return blob;
+    sourceCtx.drawImage(img, 0, 0, source.width, source.height);
+
+    const small = document.createElement("canvas");
+    small.width = size;
+    small.height = size;
+    const smallCtx = small.getContext("2d");
+    if (!smallCtx) return blob;
+    smallCtx.imageSmoothingEnabled = true;
+    smallCtx.imageSmoothingQuality = "low";
+    smallCtx.drawImage(source, 0, 0, size, size);
+
+    const out = document.createElement("canvas");
+    out.width = source.width;
+    out.height = source.height;
+    const outCtx = out.getContext("2d");
+    if (!outCtx) return blob;
+    outCtx.imageSmoothingEnabled = true;
+    outCtx.imageSmoothingQuality = "low";
+    outCtx.drawImage(small, 0, 0, out.width, out.height);
+    return new Promise((resolve, reject) => {
+      out.toBlob(
+        (simulated) => (simulated ? resolve(simulated) : reject(new Error("Nie udało się zasymulować jakości obrazu."))),
+        "image/jpeg",
+        0.82
+      );
+    });
+  }
+
   function setAuthSteps(lines) {
     const ul = $("#authSteps");
     if (!ul) return;
@@ -513,6 +675,29 @@
     const el = $("#camInlineMsg");
     if (!el) return;
     el.textContent = text || "";
+  }
+
+  function renderFaceQualityCard(quality, preprocessingMode) {
+    const card = $("#faceQualityCard");
+    const summary = $("#faceQualitySummary");
+    const list = $("#faceQualityList");
+    if (!card || !summary || !list) return;
+    if (!quality) {
+      card.classList.add("hidden");
+      return;
+    }
+    card.className = `quality-card ${qualityClassName(quality)}`;
+    summary.textContent = `${qualityLabel(quality)} · ${qualityModeLabel(preprocessingMode)}`;
+    const warnings = quality.warnings || [];
+    const details = warnings.length
+      ? warnings.map((warning) => `<li>${escapeHtml(warningLabel(warning))}</li>`).join("")
+      : "<li>Brak ostrzeżeń jakościowych.</li>";
+    list.innerHTML = details;
+  }
+
+  function renderFaceQualityError(err) {
+    const quality = err?.detail?.quality;
+    renderFaceQualityCard(quality, "standard");
   }
 
   function syncAuthTabs() {
@@ -561,6 +746,7 @@
     if (!isFace) {
       stopCamera();
       setCamInlineMsg("");
+      renderFaceQualityCard(null, null);
     } else {
       stopVoiceStreams();
     }
@@ -621,6 +807,7 @@
     });
     if (targetId === "view-admin-dash") loadDashboard();
     if (targetId === "view-admin-users") loadAdminUsers();
+    if (targetId === "view-admin-exp") refreshLowResExperimentStatus();
   }
 
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -640,6 +827,7 @@
       syncAuthTabs();
       $("#verifyUserRow")?.classList.toggle("hidden", authTab !== "verify");
       $("#authResult").hidden = true;
+      renderFaceQualityCard(null, null);
       setAuthSteps([serviceModality === "face" ? "Gotowe do skanu" : "Gotowe do nagrania"]);
     });
   });
@@ -686,6 +874,15 @@
 
   $("#expThresholdSlider")?.addEventListener("input", syncInputFromSlider);
 
+  $("#faceQualitySimulation")?.addEventListener("change", () => {
+    const selected = $("#faceQualitySimulation")?.value || "none";
+    setCamInlineMsg(
+      selected === "none"
+        ? ""
+        : `Symulacja jakości aktywna: klatka zostanie zdegradowana do ${selected}x${selected}.`
+    );
+  });
+
   async function loadVerifyUserOptions() {
     const sel = $("#verifyUserSelect");
     if (!sel) return;
@@ -719,8 +916,10 @@
       scanBtn.disabled = true;
     }
     try {
-      const blob = await captureBlobFromVideo(camVideo);
-      setAuthSteps(["Klatka zapisana", "Przetwarzanie na serwerze…", "Dopasowanie z bazą…"]);
+      let blob = await captureBlobFromVideo(camVideo);
+      blob = await applyFaceQualitySimulation(blob);
+      renderFaceQualityCard(null, null);
+      setAuthSteps(["Klatka zapisana", "Ocena jakości obrazu…", "Dopasowanie z bazą…"]);
 
       const th = getThreshold();
       const mq = "modality=face";
@@ -738,12 +937,19 @@
         }
         const top = r.results[0];
         const ok = top.similarity >= th;
-        setAuthSteps(["Klatka zapisana", "Przetwarzanie zakończone", "Dopasowanie zakończone"]);
+        const robust = r.preprocessing_mode === "low_quality_robust";
+        renderFaceQualityCard(r.quality, r.preprocessing_mode);
+        setAuthSteps([
+          "Klatka zapisana",
+          "Ocena jakości zakończona",
+          robust ? "Poprawa próbki low-quality" : "Standardowe przetwarzanie",
+          "Dopasowanie zakończone",
+        ]);
         resultEl.hidden = false;
         resultEl.className = "result-card-auth " + (ok ? "ok" : "bad");
         resultEl.innerHTML = ok
-          ? `<strong>Dostęp przyznany</strong><p>Identyfikator: <code>${escapeHtml(top.user_id)}</code></p><p>Podobieństwo: <strong>${top.similarity.toFixed(4)}</strong> (próg: ${th})</p><p class="hint-inline">Czas: ${dt} s</p>`
-          : `<strong>Odrzucono</strong><p>Najbliższy identyfikator: <code>${escapeHtml(top.user_id)}</code> — ${top.similarity.toFixed(4)} poniżej progu (${th})</p><p class="hint-inline">Czas: ${dt} s</p>`;
+          ? `<strong>Dostęp przyznany</strong><p>Identyfikator: <code>${escapeHtml(top.user_id)}</code></p><p>Podobieństwo: <strong>${top.similarity.toFixed(4)}</strong> (próg: ${th})</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; wynik uzyskano w trybie odpornym na low-res/CCTV.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`
+          : `<strong>Odrzucono</strong><p>Najbliższy identyfikator: <code>${escapeHtml(top.user_id)}</code> — ${top.similarity.toFixed(4)} poniżej progu (${th})</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; spróbuj podejść bliżej kamery lub poprawić oświetlenie.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`;
       } else {
         const uid = $("#verifyUserSelect")?.value;
         if (!uid) {
@@ -756,14 +962,22 @@
         const q = new URLSearchParams({ threshold: String(th), modality: "face" });
         const r = await api(`/verify?${q}`, { method: "POST", body: fd });
         const dt = ((performance.now() - t0) / 1000).toFixed(2);
-        setAuthSteps(["Klatka zapisana", "Przetwarzanie zakończone", "Weryfikacja zakończona"]);
+        const robust = r.preprocessing_mode === "low_quality_robust";
+        renderFaceQualityCard(r.quality, r.preprocessing_mode);
+        setAuthSteps([
+          "Klatka zapisana",
+          "Ocena jakości zakończona",
+          robust ? "Poprawa próbki low-quality" : "Standardowe przetwarzanie",
+          "Weryfikacja zakończona",
+        ]);
         resultEl.hidden = false;
         resultEl.className = "result-card-auth " + (r.accepted ? "ok" : "bad");
         resultEl.innerHTML = r.accepted
-          ? `<strong>Dostęp przyznany</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p><p class="hint-inline">Czas: ${dt} s</p>`
-          : `<strong>Odrzucono</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p><p class="hint-inline">Czas: ${dt} s</p>`;
+          ? `<strong>Dostęp przyznany</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; wynik uzyskano w trybie odpornym na low-res/CCTV.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`
+          : `<strong>Odrzucono</strong><p>${escapeHtml(r.user_id)} — podobieństwo ${r.similarity.toFixed(4)}</p>${robust ? '<p class="hint-inline">Próbka była niskiej jakości; spróbuj podejść bliżej kamery lub poprawić oświetlenie.</p>' : ""}<p class="hint-inline">Czas: ${dt} s</p>`;
       }
     } catch (e) {
+      renderFaceQualityError(e);
       setAuthSteps(["Wystąpił błąd", String(e.message)]);
       resultEl.hidden = false;
       resultEl.className = "result-card-auth bad";
@@ -926,25 +1140,26 @@
     const btn = $("#btnSubmitEnroll");
     if (!strip || !cnt || !btn) return;
     cnt.textContent = String(enrollBlobs.length);
+    const acceptableCount = enrollBlobs.filter((item) => isAcceptableEnrollmentQuality(item.quality)).length;
     strip.querySelectorAll("img").forEach((img) => {
       if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
     });
     strip.innerHTML = "";
-    enrollBlobs.forEach((blob) => {
-      const url = URL.createObjectURL(blob);
+    enrollBlobs.forEach((item) => {
+      const url = URL.createObjectURL(item.blob);
       const wrap = document.createElement("div");
-      wrap.className = "shot-thumb";
+      wrap.className = `shot-thumb is-${qualityClassName(item.quality) || "bad"}`;
       wrap.setAttribute("role", "listitem");
-      wrap.innerHTML = `<img alt="" src="${url}" /><button type="button" aria-label="Usuń klatkę z listy">×</button>`;
+      wrap.innerHTML = `<img alt="" src="${url}" /><span class="shot-quality-badge">${escapeHtml(qualityLabel(item.quality))}</span><button type="button" aria-label="Usuń klatkę z listy">×</button>`;
       wrap.querySelector("button").addEventListener("click", () => {
-        const i = enrollBlobs.indexOf(blob);
+        const i = enrollBlobs.indexOf(item);
         if (i >= 0) enrollBlobs.splice(i, 1);
         URL.revokeObjectURL(url);
         renderShotStrip();
       });
       strip.appendChild(wrap);
     });
-    btn.disabled = enrollBlobs.length < 3;
+    btn.disabled = acceptableCount < 3;
   }
 
   function renderVoiceClipStrip() {
@@ -986,8 +1201,16 @@
         return;
       }
       const blob = await captureBlobFromVideo(enrollVideo);
-      enrollBlobs.push(blob);
+      msg.textContent = "Ocena jakości klatki…";
+      const quality = await assessFaceQuality(blob);
+      enrollBlobs.push({ blob, quality });
       renderShotStrip();
+      const acceptableCount = enrollBlobs.filter((item) => isAcceptableEnrollmentQuality(item.quality)).length;
+      msg.textContent = isAcceptableEnrollmentQuality(quality)
+        ? `Dodano klatkę: ${qualityLabel(quality)}. Akceptowalne klatki: ${acceptableCount}/3.`
+        : `Klatka odrzucona jakościowo: ${qualityLabel(quality)}. Dodaj wyraźniejsze ujęcie.`;
+      msg.classList.toggle("ok", isAcceptableEnrollmentQuality(quality));
+      msg.classList.toggle("error", !isAcceptableEnrollmentQuality(quality));
     } catch (e) {
       msg.textContent = e.message;
       msg.classList.add("error");
@@ -1015,13 +1238,19 @@
       msg.classList.add("error");
       return;
     }
+    const acceptableShots = enrollBlobs.filter((item) => isAcceptableEnrollmentQuality(item.quality));
+    if (acceptableShots.length < 3) {
+      msg.textContent = "Potrzebne są co najmniej 3 akceptowalne jakościowo klatki.";
+      msg.classList.add("error");
+      return;
+    }
     msg.textContent = "Zapisywanie embeddingu…";
     try {
       const fd = new FormData();
-      enrollBlobs.forEach((b) => fd.append("images", b, "shot.jpg"));
+      acceptableShots.forEach((item) => fd.append("images", item.blob, "shot.jpg"));
       await api(`/users/${encodeURIComponent(uid)}/enroll_multi?modality=face`, { method: "POST", body: fd });
       msg.textContent =
-        "Zapisano w bazie (" + phraseKlatek(enrollBlobs.length) + ", uśredniony wektor twarzy).";
+        "Zapisano w bazie (" + phraseKlatek(acceptableShots.length) + ", uśredniony wektor twarzy).";
       msg.classList.add("ok");
       enrollBlobs.length = 0;
       renderShotStrip();
@@ -1176,6 +1405,113 @@
     }
   }
 
+  function setLowResExperimentRunning(isRunning) {
+    const runBtn = $("#btnRunLowResExperiment");
+    if (runBtn) {
+      runBtn.disabled = Boolean(isRunning);
+      runBtn.setAttribute("aria-busy", isRunning ? "true" : "false");
+    }
+  }
+
+  function renderLowResExperimentResult(result) {
+    const panel = $("#lowResExperimentResult");
+    const grid = $("#lowResExperimentGrid");
+    if (!panel || !grid || !result) return;
+    panel.classList.remove("hidden");
+    if (result.status !== "done") {
+      grid.innerHTML = `<div class="experiment-metric-card bad"><div class="label">Status</div><div class="value">${escapeHtml(result.message || "Brak poprawnego wyniku")}</div></div>`;
+      return;
+    }
+    const passes = Boolean(result.passes_p3_requirement);
+    grid.innerHTML = [
+      metricCard("Użytkownicy", String(result.actual_users ?? "—")),
+      metricCard("Low-res test", (result.requested?.low_res_sizes || []).map((size) => `${size}x${size}`).join(", ") || "—"),
+      metricCard("FRR clean", formatPercent(result.clean?.frr)),
+      metricCard("FAR clean", formatPercent(result.clean?.far)),
+      metricCard("FRR low-res standard", formatPercent(result.low_res_standard?.frr)),
+      metricCard("FRR low-res robust", formatPercent(result.low_res_robust?.frr)),
+      metricCard("FAR low-res robust", formatPercent(result.low_res_robust?.far)),
+      metricCard("Delta FRR", formatPp(result.frr_delta_pp), passes ? "ok" : "bad"),
+      metricCard("Wymaganie P3", passes ? "Spełnione" : "Niespełnione", passes ? "ok" : "bad"),
+      metricCard("Odrzucane jakościowo", (result.requested?.rejected_sizes || []).map((size) => `${size}x${size}`).join(", ") || "—"),
+      metricCard("Plik JSON", result.output_path ? escapeHtml(result.output_path) : "—"),
+    ].join("");
+  }
+
+  function metricCard(label, value, stateClass = "") {
+    return `<div class="experiment-metric-card ${stateClass}"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`;
+  }
+
+  async function loadLowResExperimentLatest() {
+    const msg = $("#lowResExperimentMsg");
+    try {
+      const result = await api("/admin/experiments/low-res/latest");
+      renderLowResExperimentResult(result);
+      if (msg && result.status === "done") {
+        msg.textContent = `Ostatni wynik: ${result.passes_p3_requirement ? "spełnia" : "nie spełnia"} wymagania P3.`;
+        msg.className = result.passes_p3_requirement ? "msg ok" : "msg error";
+      }
+    } catch (e) {
+      if (msg && !msg.textContent) {
+        msg.textContent = "Brak zapisanego wyniku eksperymentu.";
+        msg.className = "msg";
+      }
+    }
+  }
+
+  async function refreshLowResExperimentStatus() {
+    const msg = $("#lowResExperimentMsg");
+    try {
+      const status = await api("/admin/experiments/low-res/status");
+      const running = status.status === "running";
+      setLowResExperimentRunning(running);
+      if (msg) {
+        msg.textContent = `${experimentStatusLabel(status.status)}${experimentProgressText(status.progress)} Plik: ${status.output_path}`;
+        msg.className = status.status === "failed" ? "msg error" : "msg";
+      }
+      if (running && !lowResExperimentPollId) {
+        lowResExperimentPollId = window.setInterval(refreshLowResExperimentStatus, 1000);
+      }
+      if (!running && lowResExperimentPollId) {
+        window.clearInterval(lowResExperimentPollId);
+        lowResExperimentPollId = 0;
+      }
+      if (!running) await loadLowResExperimentLatest();
+    } catch (e) {
+      setLowResExperimentRunning(false);
+      if (msg) {
+        msg.textContent = `Nie udało się pobrać statusu eksperymentu: ${e.message}`;
+        msg.className = "msg error";
+      }
+    }
+  }
+
+  async function runLowResExperiment() {
+    const msg = $("#lowResExperimentMsg");
+    setLowResExperimentRunning(true);
+    if (msg) {
+      msg.textContent = "Uruchamianie eksperymentu low-res / CCTV…";
+      msg.className = "msg";
+    }
+    try {
+      const threshold = getThreshold();
+      const status = await api(`/admin/experiments/low-res/run?${new URLSearchParams({ threshold: String(threshold) })}`, {
+        method: "POST",
+      });
+      if (msg) {
+        msg.textContent = `${experimentStatusLabel(status.status)}${experimentProgressText(status.progress)} Plik: ${status.output_path}`;
+        msg.className = "msg";
+      }
+      await refreshLowResExperimentStatus();
+    } catch (e) {
+      setLowResExperimentRunning(false);
+      if (msg) {
+        msg.textContent = `Nie udało się uruchomić eksperymentu: ${e.message}`;
+        msg.className = "msg error";
+      }
+    }
+  }
+
   async function loadAdminUsers() {
     const tbody = $("#adminUsersBody");
     const msg = $("#adminUsersMsg");
@@ -1225,13 +1561,18 @@
 
   $("#btnAdminRefreshUsers")?.addEventListener("click", loadAdminUsers);
   $("#adminModalitySelect")?.addEventListener("change", loadAdminUsers);
+  $("#btnRunLowResExperiment")?.addEventListener("click", runLowResExperiment);
+  $("#btnRefreshLowResExperiment")?.addEventListener("click", refreshLowResExperimentStatus);
 
   $("#formCompare")?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const form = ev.target;
     const msg = $("#compareMsg");
+    const qualityCard = $("#compareQualityCard");
+    const qualityList = $("#compareQualityList");
     msg.textContent = "";
     msg.className = "msg";
+    qualityCard?.classList.add("hidden");
     const fa = form.image_a?.files?.[0];
     const fb = form.image_b?.files?.[0];
     if (!fa || !fb) {
@@ -1245,11 +1586,23 @@
     const q = new URLSearchParams({ threshold: String(form.threshold.value) });
     try {
       const r = await api(`/compare?${q}`, { method: "POST", body: fd });
-      msg.textContent = `Ta sama osoba (heurystycznie): ${r.same_person_guess ? "tak" : "nie"} — podobieństwo ${r.similarity.toFixed(4)}`;
+      msg.textContent = `Ta sama osoba (heurystycznie): ${r.same_person_guess ? "tak" : "nie"} — podobieństwo ${r.similarity.toFixed(4)}. Tryby: A ${qualityModeLabel(r.preprocessing_mode_a)}, B ${qualityModeLabel(r.preprocessing_mode_b)}.`;
       msg.classList.add("ok");
+      if (qualityCard && qualityList) {
+        qualityCard.className = "quality-card";
+        qualityList.innerHTML = [
+          `<li>Obraz A: ${escapeHtml(qualityLabel(r.quality_a))} (${escapeHtml(qualityModeLabel(r.preprocessing_mode_a))})</li>`,
+          `<li>Obraz B: ${escapeHtml(qualityLabel(r.quality_b))} (${escapeHtml(qualityModeLabel(r.preprocessing_mode_b))})</li>`,
+          `<li>Ostrzeżenia: ${escapeHtml((r.quality_warnings || []).map(warningLabel).join(", ") || "brak")}</li>`,
+        ].join("");
+      }
     } catch (e) {
       msg.textContent = e.message;
       msg.classList.add("error");
+      if (qualityCard && qualityList && e?.detail?.quality) {
+        qualityCard.className = `quality-card ${qualityClassName(e.detail.quality)}`;
+        qualityList.innerHTML = `<li>${escapeHtml(qualityLabel(e.detail.quality))}: ${escapeHtml((e.detail.quality_warnings || []).map(warningLabel).join(", "))}</li>`;
+      }
     }
   });
 

@@ -74,6 +74,17 @@
             <button type="button" class="btn secondary" id="btnCamToggle">Włącz kamerę</button>
             <button type="button" class="btn primary" id="btnScan" disabled aria-busy="false">Wykonaj skan</button>
           </div>
+          <div class="quality-sim-control">
+            <label class="field-label" for="faceQualitySimulation">Symulacja jakości</label>
+            <select id="faceQualitySimulation" aria-describedby="faceQualitySimulationHint">
+              <option value="none">Brak symulacji</option>
+              <option value="80">Low-res 80x80</option>
+              <option value="64">Low-res 64x64</option>
+              <option value="48">Odrzucane 48x48</option>
+              <option value="32">Odrzucane 32x32</option>
+            </select>
+            <p class="hint-inline" id="faceQualitySimulationHint">Tylko do demonstracji: klatka zostanie sztucznie zdegradowana przed wysłaniem.</p>
+          </div>
           <p class="msg cam-inline-msg" id="camInlineMsg" role="status" aria-live="polite"></p>
         </div>
         <div class="camera-column hidden" id="authVoiceColumn">
@@ -123,6 +134,11 @@
               <li data-step="idle">Gotowe do skanu</li>
             </ul>
           </div>
+          <div class="quality-card hidden" id="faceQualityCard" aria-live="polite">
+            <h2 class="status-title">Jakość obrazu</h2>
+            <p class="quality-summary" id="faceQualitySummary">Brak próbki</p>
+            <ul class="quality-list" id="faceQualityList"></ul>
+          </div>
           <div class="result-card-auth" id="authResult" hidden role="region" aria-live="polite" aria-label="Wynik autoryzacji"></div>
         </div>
       </div>
@@ -148,6 +164,7 @@
           <label class="field-label" for="enrollUserId">Identyfikator użytkownika</label>
           <input type="text" id="enrollUserId" autocomplete="username" placeholder="np. jan_kowalski" />
           <p class="hint-inline">Co najmniej <strong>3</strong> klatki; wygodnie <strong>5–10</strong>. Litery, cyfry i podkreślenia.</p>
+          <p class="hint-inline">Profil referencyjny powinien być możliwie wyraźny. Słabsze próbki mogą być obsłużone przy logowaniu, ale do zapisu wymagane są co najmniej 3 akceptowalne klatki.</p>
           <div class="camera-shell enroll-cam">
             <video id="enrollVideo" playsinline muted autoplay aria-label="Podgląd kamery — rejestracja"></video>
             <div class="face-guide" aria-hidden="true"></div>
@@ -267,6 +284,21 @@
         <div class="chart-placeholder" id="rocPlaceholder">
           <span>Miejsce na wykres ROC (wyniki eksperymentów)</span>
         </div>
+        <h2 class="section-mini">Test low-res / CCTV (P3)</h2>
+        <div class="experiment-run-card" aria-live="polite">
+          <p class="hint-inline">
+            Uruchamia predefiniowany eksperyment: clean CelebA vs łagodne degradacje CCTV (<code>64x64</code>, <code>80x80</code>). Mniejsze próbki traktujemy jako przypadki do odrzucenia jakościowego. Wynik jest zapisywany jako JSON w <code>data/system/experiments/low_res_face_latest.json</code>.
+          </p>
+          <div class="experiment-actions">
+            <button type="button" class="btn secondary" id="btnRunLowResExperiment">Uruchom test low-res / CCTV</button>
+            <button type="button" class="btn ghost" id="btnRefreshLowResExperiment">Odśwież wynik</button>
+          </div>
+          <p class="msg" id="lowResExperimentMsg" role="status"></p>
+          <div class="experiment-result hidden" id="lowResExperimentResult">
+            <h3 class="experiment-result-title">Ostatni wynik</h3>
+            <div class="experiment-result-grid" id="lowResExperimentGrid"></div>
+          </div>
+        </div>
         <h2 class="section-mini">Porównanie 1:1 (dwa obrazy)</h2>
         <form id="formCompare" class="form-stack compact">
           <label class="field-label" for="compareThreshold">Próg podobieństwa</label>
@@ -278,6 +310,10 @@
           <button type="submit" class="btn secondary">Porównaj obrazy</button>
         </form>
         <p class="msg" id="compareMsg"></p>
+        <div class="quality-card hidden" id="compareQualityCard" aria-live="polite">
+          <h2 class="status-title">Jakość porównywanych obrazów</h2>
+          <ul class="quality-list" id="compareQualityList"></ul>
+        </div>
         <h2 class="section-mini">Porównanie 1:1 (dwa nagrania głosu)</h2>
         <form id="formCompareVoice" class="form-stack compact">
           <label class="field-label" for="compareVoiceThreshold">Próg podobieństwa (głos)</label>
