@@ -12,6 +12,7 @@ AUTH_MAX_AUDIO_SECONDS = 60.0
 CROP_SECONDS = 4.0
 MAX_READ_SECONDS = 8.0
 NUM_TTA_CROPS = 3
+ENROLLMENT_NOISE_RATIOS = (0.5, 0.75, 1.0)
 
 
 def common_voice_pl_root() -> Path | None:

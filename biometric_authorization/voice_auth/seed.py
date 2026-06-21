@@ -135,7 +135,7 @@ def run_voice_auto_seed(
         clip = paths[0]
         try:
             data = clip.read_bytes()
-            vec = voice_engine.embed_from_bytes(data)
+            vec = voice_engine.embed_enrollment_from_bytes(data)
             store.upsert(cid, vec, sample_count=1)
             existing.add(cid)
             added += 1

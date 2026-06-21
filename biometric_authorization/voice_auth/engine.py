@@ -10,7 +10,11 @@ import torch
 import torch.nn.functional as F
 from speechbrain.inference.speaker import EncoderClassifier
 
-from voice_auth.audio_preprocess import build_tta_batch_from_wav, load_wav_mono_16k_from_bytes
+from voice_auth.audio_preprocess import (
+    build_enrollment_tta_batch_from_wav,
+    build_tta_batch_from_wav,
+    load_wav_mono_16k_from_bytes,
+)
 from voice_auth.config import VOICE_EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
@@ -60,6 +64,19 @@ class VoiceEmbeddingEngine:
     def embed_from_bytes(self, data: bytes) -> np.ndarray:
         wav = load_wav_mono_16k_from_bytes(data)
         batch, lengths = build_tta_batch_from_wav(wav)
+        return self._embed_from_batch(batch, lengths)
+
+    @torch.no_grad()
+    def embed_enrollment_from_bytes(self, data: bytes) -> np.ndarray:
+        wav = load_wav_mono_16k_from_bytes(data)
+        batch, lengths = build_enrollment_tta_batch_from_wav(wav)
+        return self._embed_from_batch(batch, lengths)
+
+    def close(self) -> None:
+        self.embedding_model = None
+        self._spk_module = None
+
+    def _embed_from_batch(self, batch: torch.Tensor, lengths: torch.Tensor) -> np.ndarray:
         batch = batch.to(self.device)
         lengths = lengths.to(self.device)
         parts = self._forward_embedding(batch, lengths)
@@ -68,7 +85,3 @@ class VoiceEmbeddingEngine:
         if out.shape != (VOICE_EMBEDDING_DIM,):
             raise ValueError(f"unexpected embedding shape {out.shape}")
         return out
-
-    def close(self) -> None:
-        self.embedding_model = None
-        self._spk_module = None

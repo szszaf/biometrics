@@ -13,6 +13,7 @@ import torchaudio
 from voice_auth.config import (
     AUTH_MAX_AUDIO_SECONDS,
     CROP_SECONDS,
+    ENROLLMENT_NOISE_RATIOS,
     MAX_READ_SECONDS,
     NUM_TTA_CROPS,
     TARGET_SAMPLE_RATE,
@@ -69,8 +70,30 @@ def _get_crops(wav: torch.Tensor, n_crops: int, crop_len: int) -> list[torch.Ten
     return [wav[s : s + crop_len] for s in starts]
 
 
+def add_noise_by_amplitude_torch(signal: torch.Tensor, noise_ratio: float) -> torch.Tensor:
+    signal_rms = torch.sqrt(torch.mean(signal**2))
+    noise_std = noise_ratio * signal_rms
+    noise = torch.randn_like(signal) * noise_std
+    return signal + noise
+
+
 def build_tta_batch_from_wav(wav: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """``wav`` mono float CPU → padded batch (B, T) na urządzeniu docelowym w engine."""
+    fixed = _build_fixed_crops(wav)
+    return _batch_from_crops(fixed)
+
+
+def build_enrollment_tta_batch_from_wav(wav: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Enrollment batch with clean crops and noisy amplitude augmentations."""
+    fixed = _build_fixed_crops(wav)
+    augmented: list[torch.Tensor] = []
+    for crop in fixed:
+        augmented.append(crop)
+        augmented.extend(add_noise_by_amplitude_torch(crop, ratio) for ratio in ENROLLMENT_NOISE_RATIOS)
+    return _batch_from_crops(augmented)
+
+
+def _build_fixed_crops(wav: torch.Tensor) -> list[torch.Tensor]:
     wav = _cap_auth_length(wav)
     crop_len = int(CROP_SECONDS * TARGET_SAMPLE_RATE)
     crops = _get_crops(wav, NUM_TTA_CROPS, crop_len)
@@ -81,6 +104,10 @@ def build_tta_batch_from_wav(wav: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
         elif c.shape[0] > crop_len:
             c = c[:crop_len]
         fixed.append(c)
-    padded = torch.stack(fixed)
+    return fixed
+
+
+def _batch_from_crops(crops: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    padded = torch.stack(crops)
     lengths = torch.ones(padded.shape[0], dtype=torch.float32)
     return padded, lengths

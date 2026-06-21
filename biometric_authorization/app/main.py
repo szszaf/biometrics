@@ -551,7 +551,7 @@ async def enroll(
         raise HTTPException(status_code=400, detail="Dla głosu prześlij pole „audio”.")
     raw = await audio.read()
     try:
-        vec = st.voice_engine.embed_from_bytes(raw)
+        vec = st.voice_engine.embed_enrollment_from_bytes(raw)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Nie udało się przetworzyć nagrania: {e}") from e
     st.voice_store.upsert(uid, vec, sample_count=1)
@@ -601,7 +601,7 @@ async def enroll_multi(
     for a in audio_list:
         raw = await a.read()
         try:
-            parts.append(st.voice_engine.embed_from_bytes(raw))
+            parts.append(st.voice_engine.embed_enrollment_from_bytes(raw))
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Przetwarzanie audio nie powiodło się: {e}") from e
     stacked = torch.from_numpy(np.stack(parts, axis=0).astype(np.float32))
